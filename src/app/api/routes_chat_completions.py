@@ -5,6 +5,8 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.citations import build_citations, format_answer_with_quotes
+from app.core.pii import mask_pii
 from app.core.pipeline import QueryResult, run_query_pipeline
 from app.db.queries import log_conversation
 from app.db.session import get_session
@@ -24,22 +26,9 @@ class ChatCompletionRequest(BaseModel):
 
 
 def _format_answer_with_sources(result: QueryResult) -> str:
-    """OpenAI Chat Completions 格式沒有標準的來源引用欄位，改把來源附註在回答文字末尾
-    （見回饋迴圈設計文件第 9 節未解決問題：之後若確認 Open WebUI 支援 citations
-    附加欄位，可改用該格式）。"""
-    if not result.sources:
-        return result.answer
-
-    lines = [result.answer, "", "---", "來源："]
-    seen: set[str] = set()
-    for chunk in result.sources:
-        key = f"{chunk.law_name}-{chunk.article}"
-        if key in seen:
-            continue
-        seen.add(key)
-        article_part = f" 第{chunk.article}條" if chunk.article else ""
-        lines.append(f"- {chunk.law_name}{article_part}（更新於 {chunk.updated_at.isoformat()}）：{chunk.source_url}")
-    return "\n".join(lines)
+    """OpenAI Chat Completions 格式沒有標準的來源引用欄位，改把原文引用附在回答文字末尾
+    （與 LINE 路徑共用 citations 模組，督導在 Open WebUI 看到的引用與照護員一致）。"""
+    return format_answer_with_quotes(result.answer, build_citations(result.sources), result.disclaimer)
 
 
 _AGENT_MODEL_ID = "小照"
@@ -56,7 +45,8 @@ async def list_models() -> dict:
 @router.post("/v1/chat/completions")
 async def chat_completions(request: ChatCompletionRequest, session: AsyncSession = Depends(get_session)) -> dict:
     user_messages = [m for m in request.messages if m.role == "user"]
-    query_text = user_messages[-1].content if user_messages else ""
+    # 寫入 biz.messages 前遮罩，與 /v1/query 一致
+    query_text = mask_pii(user_messages[-1].content if user_messages else "")
 
     result: QueryResult = await run_query_pipeline(query_text, session)
 
