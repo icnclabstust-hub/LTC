@@ -1,0 +1,30 @@
+# ===== 環境設定與金鑰（含帳密、Token）：絕不提交 =====
+.env
+.env.*
+!.env.example
+.webui_secret_key
+*.key
+*.pem
+
+# ===== 資料：資料與系統分開，資料一律不進版控 =====
+data/
+backups/
+*.sqlite3
+*.db
+*.db-shm
+*.db-wal
+*.dump
+*.log
+logs/
+
+# ===== 本機環境／系統資訊 =====
+.claude/settings.local.json
+.vscode/
+*.lnk
+
+# ===== Python 產物 =====
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
