@@ -16,10 +16,9 @@ class Settings(BaseSettings):
     faithfulness_citation_overlap_threshold: float = 0.4
     open_webui_base_url: str = "http://localhost:8080"
     open_webui_api_key: str = ""
-    line_channel_secret: str = ""
-    line_channel_access_token: str = ""
-    line_api_base_url: str = "https://api.line.me"
-    wake_word_session_window_seconds: int = 180
+    # 小照 FE（frontend/）呼叫 /v1/* 用的服務間權杖；未設定時一律 401（fail closed），
+    # 避免忘了設定就讓端點無驗證對外（見 2026-10-19 fe-be-integration 設計文件第 6 節）
+    xiaozhao_api_token: str = ""
 
     class Config:
         env_file = ".env"

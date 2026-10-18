@@ -3,18 +3,20 @@ from fastapi import FastAPI
 from sqlalchemy import text
 
 from app.api.routes_chat_completions import router as chat_completions_router
-from app.api.routes_line_webhook import router as line_webhook_router
+from app.api.routes_identity import router as identity_router
 from app.api.routes_ltc_points import router as ltc_points_router
-from app.api.routes_query import router as query_router
+from app.api.routes_xiaozhao import router as xiaozhao_router
 from app.config import settings
 from app.core.retrieval import ChunkRetriever
 from app.db.session import SessionLocal
 
 app = FastAPI(title="長照法規／SOP 問答 RAG 系統", version="0.1.0")
-app.include_router(query_router)
+# LINE webhook 統一由 FE（frontend/ 的 /callback）接收，BE 不再有自己的 webhook；
+# 原 /api/query 由 /v1/query 取代（見 2026-10-19 fe-be-integration 設計文件第 3 節）
+app.include_router(xiaozhao_router)
+app.include_router(identity_router)
 app.include_router(ltc_points_router)
 app.include_router(chat_completions_router)
-app.include_router(line_webhook_router)
 
 
 async def _check_postgres() -> bool:

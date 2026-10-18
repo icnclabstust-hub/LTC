@@ -1,7 +1,7 @@
 import uuid
 from datetime import date, datetime
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -70,6 +70,8 @@ class User(Base):
     name: Mapped[str] = mapped_column(Text)
     role: Mapped[str] = mapped_column(String(16))
     supervisor_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("biz.users.user_id"), nullable=True)
+    # 匿名代號（照護員 CG-0001、督導 SV-0002），送 LLM、統計與督導卡片只用代號不用姓名
+    pseudonym: Mapped[str | None] = mapped_column(String(16), unique=True, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
@@ -95,7 +97,8 @@ class BindingCode(Base):
 
     code_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     code: Mapped[str] = mapped_column(String(6))
-    created_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("biz.users.user_id"))
+    # NULL 表示由 FE 管理員（LINE_ADMIN_USER_IDS 設定，不是 biz.users 成員）產生
+    created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("biz.users.user_id"), nullable=True)
     target_user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("biz.users.user_id"))
     expires_at: Mapped[datetime] = mapped_column(DateTime)
     used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -137,6 +140,40 @@ class InboxRequest(Base):
     payload: Mapped[dict] = mapped_column(JSONB)
     received_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     processed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class XiaozhaoRequest(Base):
+    """小照 FE 送來的提問與處理狀態（/v1/query、/v1/scene，見 2026-10-19 fe-be-integration 設計文件 5.3 節）。
+
+    以 FE 產生的 request_id 為主鍵，FE 重送同一請求時不會重複執行 RAG。
+    query_text 與 payload 一律為遮罩後內容；payload 不含照護員姓名與逐字稿。
+    """
+
+    __tablename__ = "xiaozhao_requests"
+    # 拒答統計（P2 每週分群）會依狀態與時間查詢
+    __table_args__ = (Index("ix_xiaozhao_requests_status_created_at", "status", "created_at"), {"schema": "biz"})
+
+    request_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(16))
+    # pending → answered | refused | error；scene 為 recorded；human_answered 留給 P2 工單
+    status: Mapped[str] = mapped_column(String(16), default="pending")
+    channel: Mapped[str] = mapped_column(String(32))
+    user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("biz.users.user_id"), nullable=True)
+    role: Mapped[str] = mapped_column(String(16))
+    query_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    payload: Mapped[dict] = mapped_column(JSONB)
+    answer_full: Mapped[str | None] = mapped_column(Text, nullable=True)
+    answer_spoken: Mapped[str | None] = mapped_column(Text, nullable=True)
+    citations: Mapped[list] = mapped_column(JSONB, default=list)
+    refusal_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    escalate: Mapped[bool] = mapped_column(Boolean, default=False)
+    confidence: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    help_request_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    human_answer: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class OutboxEvent(Base):

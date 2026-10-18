@@ -8,7 +8,8 @@ from app.config import settings
 from app.core.models import Chunk
 
 _CACHE_TTL_SECONDS = 3600
-_KEY_PREFIX = "query_cache:"
+# v2：2026-10-19 起只快取「回答」；改前綴讓舊版快取的拒答結果直接失效
+_KEY_PREFIX = "query_cache:v2:"
 
 _client = redis.from_url(settings.redis_url, decode_responses=True)
 
