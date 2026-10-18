@@ -184,6 +184,12 @@ class Database:
             self._add_column("utterances", "intent_owner", "TEXT")
             self._add_column("text_questions", "reply_ms", "REAL")
             self._add_column("line_cases", "reply_ms", "REAL")
+            # 串接後端（2026-10-19 fe-be-integration）：帳號以後端為準，本機只快取；緊急請求優先排序
+            self._add_column("accounts", "be_user_id", "TEXT")
+            self._add_column("accounts", "pseudonym", "TEXT")
+            self._add_column("accounts", "code_expires_at", "REAL")
+            self._add_column("supervisor_requests", "priority", "TEXT NOT NULL DEFAULT 'normal'")
+            self._add_column("supervisor_requests", "category", "TEXT")
 
     def _add_column(self, table: str, column: str, decl: str) -> None:
         if column not in {r[1] for r in self._conn.execute(f"PRAGMA table_info({table})")}:

@@ -21,7 +21,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import services
+from . import emergency, services
 from .auth import IdTokenVerifier, Principal, Unauthorized, require, resolve_principal
 from .backend import BackgroundRunner, build_backend
 from .config import (
@@ -33,6 +33,7 @@ from .config import (
     load_settings,
 )
 from .db import Database, now
+from .identity import build_identity
 from .pipeline import ReportRecorder, SessionProcessor
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,8 @@ class State:
         self.backend = build_backend(settings.backend_mode, settings.data_dir if settings.backend_log else None,
                                      settings.backend_url, settings.backend_token, settings.backend_poll_seconds,
                                      settings.backend_timeout_seconds, settings.backend_scene_text)
+        # http 模式：帳號與綁定以後端為準，本機 accounts 只當快取（2026-10-19 fe-be-integration）
+        self.identity = build_identity(settings.backend_mode, settings.backend_url, settings.backend_token)
         # http 模式：後端呼叫在背景執行（async-backend）；模擬後端立即回覆，維持立即執行
         self.runner = BackgroundRunner(settings.backend_workers,
                                        inline=not (settings.backend_async and settings.backend_mode == "http"))
@@ -84,7 +87,7 @@ def create_app(state: State | None = None) -> FastAPI:
             from .line_service import LineService
 
             st.line = LineService(st.settings, st.db, st.backend, classify=lambda t: st.engines.classify(t)
-                                  if st.engines else (None, None), runner=st.runner)
+                                  if st.engines else (None, None), runner=st.runner, identity=st.identity)
         cleanup = asyncio.create_task(_cleanup_loop(st))
         yield
         cleanup.cancel()
@@ -143,7 +146,7 @@ def get_principal(
         user_id = name = unquote(token[len("dev:"):])
     else:
         user_id, name = st.verifier.verify(token)
-    return track_name(st, resolve_principal(st.db, st.settings, user_id, name, x_acting_role))
+    return track_name(st, resolve_principal(st.db, st.settings, user_id, name, x_acting_role, st.identity))
 
 
 def track_name(st: State, principal: Principal) -> Principal:
@@ -247,6 +250,14 @@ def _turn_detail(st: State, turn: dict) -> dict:
     return turn
 
 
+def _code_expires_at(st: State, account_id: int) -> float | None:
+    """綁定碼效期：本機模式 24 小時；串接後端時依後端（10 分鐘），網頁依此顯示。"""
+    row = st.db.one(
+        "SELECT COALESCE((SELECT MAX(expires_at) FROM binding_codes WHERE account_id = a.id AND used_at IS NULL),"
+        " a.code_expires_at) AS expires_at FROM accounts a WHERE a.id = ?", (account_id,))
+    return row["expires_at"] if row else None
+
+
 def _register_routes(app: FastAPI) -> None:
     @app.get("/")
     def root():
@@ -269,7 +280,7 @@ def _register_routes(app: FastAPI) -> None:
     def bind(body: BindIn, st: State = Depends(get_state), p: Principal = Depends(get_principal)):
         if p.role is not None and not p.is_admin:
             raise services.Conflict("已經綁定過")
-        account = services.bind(st.db, body.code, p.user_id)
+        account = services.bind(st.db, body.code, p.user_id, st.identity)
         if st.line:
             st.line.link_menu(p.user_id, account["role"])
         return {"role": account["role"], "display_name": account["display_name"]}
@@ -346,23 +357,32 @@ def _register_routes(app: FastAPI) -> None:
         """不錄音時的手動打字提問：送後端回答或轉督導。"""
         require(p, "caregiver")
         _own_resident(st, p, resident_id)
-        intent, conf = st.engines.classify(body.question) if st.engines else (None, None)
+        question = body.question.strip()
+        match = emergency.detect(question)
         cur = st.db.execute(
             "INSERT INTO text_questions (resident_id, caregiver_line_user_id, question, status, created_at)"
-            " VALUES (?, ?, ?, 'pending', ?)", (resident_id, p.user_id, body.question.strip(), now()),
+            " VALUES (?, ?, ?, ?, ?)", (resident_id, p.user_id, question, "emergency" if match else "pending", now()),
         )
-        qid, question = cur.lastrowid, body.question.strip()
+        qid = cur.lastrowid
+        if match is not None:
+            # 緊急關鍵字：固定回覆＋緊急督導請求，不呼叫後端（與 LINE 聊天室相同，emergency.py）
+            request_id = services.create_emergency_request(st.db, p.user_id, "text_question", qid, question, match)
+            notified = st.line.notify_emergency(request_id, p.user_id, match) if st.line else False
+            st.db.execute("UPDATE text_questions SET answer = ? WHERE id = ?",
+                          (emergency.reply_text(match, st.settings.agency_phone, notified), qid))
+            return st.db.one("SELECT * FROM text_questions WHERE id = ?", (qid,))
+        intent, conf = st.engines.classify(question) if st.engines else (None, None)
 
         def finish(result) -> None:
             st.db.execute("UPDATE text_questions SET answer = ?, status = ?, reply_ms = ? WHERE id = ?",
                           (result.answer, result.status, result.elapsed_ms, qid))
             if result.status == "awaiting_human":
                 services.create_supervisor_request(st.db, p.user_id, "text_question", qid, question,
-                                                   result.reason, result.request_id)
+                                                   result.reason, result.request_id, category=result.refusal_reason)
 
         future = st.runner.submit(st.backend.query, {
-            "text_question_id": qid, "caregiver_name": services.caregiver_name(st.db, p.user_id),
-            "text": body.question, "intent": intent, "intent_conf": conf, "keywords": [], "provisional": False})
+            "text_question_id": qid, **services.caller_fields(st.db, p.user_id),
+            "text": question, "intent": intent, "intent_conf": conf, "keywords": [], "provisional": False})
         # 最多等回覆目標（3 秒）；還沒好就先回「查詢中」，回答到了再寫入（async-backend 第 7 節）
         try:
             finish(future.result(timeout=st.settings.reply_target_seconds))
@@ -561,7 +581,7 @@ def _register_routes(app: FastAPI) -> None:
             "SELECT q.*, COALESCE(a.display_name, n.display_name, '（未綁定帳號）') AS caregiver_name"
             " FROM supervisor_requests q LEFT JOIN accounts a ON a.line_user_id = q.caregiver_line_user_id"
             " LEFT JOIN user_names n ON n.line_user_id = q.caregiver_line_user_id"
-            " ORDER BY q.status = 'replied', q.id DESC"
+            " ORDER BY q.status = 'replied', q.priority = 'urgent' DESC, q.id DESC"
         )
 
     @app.post("/api/supervisor/requests/{request_id}/reply")
@@ -650,15 +670,15 @@ def _register_routes(app: FastAPI) -> None:
         require(p, "admin")
         return st.db.all(
             "SELECT a.id, a.display_name, a.role, a.status, a.created_at, a.line_user_id IS NOT NULL AS bound,"
-            " (SELECT MAX(expires_at) FROM binding_codes b WHERE b.account_id = a.id AND b.used_at IS NULL)"
-            " AS code_expires_at FROM accounts a ORDER BY a.id"
+            " COALESCE((SELECT MAX(expires_at) FROM binding_codes b WHERE b.account_id = a.id AND b.used_at IS NULL),"
+            " a.code_expires_at) AS code_expires_at FROM accounts a ORDER BY a.id"
         )
 
     @app.post("/api/admin/accounts")
     def create_account(body: AccountIn, st: State = Depends(get_state), p: Principal = Depends(get_principal)):
         require(p, "admin")
-        account, code = services.create_account(st.db, body.display_name, body.role)
-        return {"account": account, "binding_code": code}
+        account, code = services.create_account(st.db, body.display_name, body.role, st.identity)
+        return {"account": account, "binding_code": code, "expires_at": _code_expires_at(st, account["id"])}
 
     @app.post("/api/admin/accounts/{account_id}/binding-code")
     def new_code(account_id: int, st: State = Depends(get_state), p: Principal = Depends(get_principal)):
@@ -666,7 +686,8 @@ def _register_routes(app: FastAPI) -> None:
         account = st.db.one("SELECT * FROM accounts WHERE id = ?", (account_id,))
         if account and account["line_user_id"]:
             raise services.Conflict("帳號已綁定，不需要綁定碼")
-        return {"binding_code": services.issue_binding_code(st.db, account_id)}
+        code = services.issue_binding_code(st.db, account_id, st.identity)
+        return {"binding_code": code, "expires_at": _code_expires_at(st, account_id)}
 
     @app.patch("/api/admin/accounts/{account_id}")
     def patch_account(account_id: int, body: AccountPatch, st: State = Depends(get_state),
@@ -674,7 +695,7 @@ def _register_routes(app: FastAPI) -> None:
         require(p, "admin")
         if body.status != "disabled":
             raise services.ServiceError("只支援停用帳號")
-        account = services.disable_account(st.db, account_id)
+        account = services.disable_account(st.db, account_id, st.identity)
         if st.line and account["line_user_id"]:
             st.line.unlink_menu(account["line_user_id"])
         return account

@@ -192,7 +192,8 @@ class SessionProcessor:
         consent = db.one("SELECT decision FROM voice_consents WHERE resident_id = ?", (resident_id,))
         self.voiceprint_agreed = bool(consent and consent["decision"] == "agreed")
         # 送後端時辨識照護員（管理員設定的姓名）
-        self.caregiver_name = services.caregiver_name(db, caregiver_user_id)
+        # 送後端的身分欄位（caregiver_name、後端 user_id、role；2026-10-19 fe-be-integration）
+        self.caller = services.caller_fields(db, caregiver_user_id)
         self._endpointer = AdaptiveEndpointer() if self._adaptive else None
         # 匿名分群需要抽聲紋，只在有聲紋同意時啟用；群組只在記憶體，不存檔
         self._groups = SpeakerGroups(GROUP_THRESHOLD) if self._adaptive and self.voiceprint_agreed else None
@@ -639,7 +640,7 @@ class SessionProcessor:
             results = self._question_results(turn) if self._question_window else self._intent_results(turn, intents)
             # 整輪紀錄：帶意圖清單；結果不再當作回答
             self._backend.scene({
-                "turn_id": turn.id, "session_id": self.session_id, "caregiver_name": self.caregiver_name,
+                "turn_id": turn.id, "session_id": self.session_id, **self.caller,
                 "end_reason": reason,
                 "utterances": [
                     {"idx": u["idx"], "text": u["text"], "speaker_code": u["speaker_label"],
@@ -724,7 +725,7 @@ class SessionProcessor:
         elif intent in PREFETCH_INTENTS and conf >= self._prefetch_threshold and intent not in turn.prefetched:
             t0 = time.perf_counter()
             payload = {
-                "turn_id": turn.id, "utterance_id": idx, "caregiver_name": self.caregiver_name,
+                "turn_id": turn.id, "utterance_id": idx, **self.caller,
                 "text": text, "speaker_code": label, "speaker_role": role,
                 "intent": intent, "intent_conf": conf, "keywords": [], "provisional": True,
             }
@@ -751,7 +752,7 @@ class SessionProcessor:
         context = _question_context(turn.utterances, question)
         return {
             "turn_id": turn.id, "question_utterance_id": question["idx"],
-            "context_utterance_ids": [u["idx"] for u in context], "caregiver_name": self.caregiver_name,
+            "context_utterance_ids": [u["idx"] for u in context], **self.caller,
             "text": "".join(u["text"].rstrip("，。！") + "。" for u in context) + question["text"],
             "speaker_code": question["speaker_label"], "speaker_role": question["speaker_role"],
             "intent": question["intent"], "intent_conf": question["intent_conf"],
@@ -786,7 +787,7 @@ class SessionProcessor:
             else:
                 answer = self._query_result({
                     "turn_id": turn.id, "utterance_ids": item["utterance_ids"],
-                    "caregiver_name": self.caregiver_name, "text": item["text"], "intent": item["intent"],
+                    **self.caller, "text": item["text"], "intent": item["intent"],
                     "intent_conf": item["confidence"], "speaker_codes": item["speaker_codes"],
                     "keywords": [], "provisional": False,
                 })

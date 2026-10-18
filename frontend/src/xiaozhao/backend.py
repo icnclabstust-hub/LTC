@@ -23,9 +23,13 @@ logger = logging.getLogger(__name__)
 @dataclass
 class BackendResult:
     request_id: str
+    # answered：有內容可直接給照護員（含不需督導的拒答說明，見 refusal_reason）；awaiting_human：轉督導
     status: str  # answered | awaiting_human | no_question
+    # awaiting_human 時也可能有內容（例如醫療問題的安全提示），照護員會同時看到
     answer: str | None = None
     reason: str | None = None
+    # 後端的結構化拒答原因（2026-10-19 fe-be-integration 第 5.1 節）；None 表示正常回答
+    refusal_reason: str | None = None
     # 送出到收到回覆的毫秒數（TrackedBackend 量測；2026-10-14 async-backend 第 7 節）
     elapsed_ms: float | None = None
 
@@ -35,8 +39,8 @@ class Backend(Protocol):
     def scene(self, payload: dict) -> BackendResult: ...
 
 
-# 設計文件 2.1 節路線 2 第 3 項：醫療、用藥、補助金額一律轉人工
-_HUMAN_ONLY = re.compile(r"藥|醫|病|診|補助|金額|多少錢")
+# 醫療、用藥一律轉人工；補助金額依 2026-10-19 題庫 v0.4 改為可回答（與後端 sensitive 規則一致）
+_HUMAN_ONLY = re.compile(r"藥|醫|病|診")
 _ANSWER_INTENTS = {"規範詢問", "服務請求", "身體不適陳述"}
 
 
@@ -56,7 +60,8 @@ class MockBackend:
     def _decide(self, text: str, intent: str | None) -> BackendResult:
         request_id = str(uuid.uuid4())
         if _HUMAN_ONLY.search(text):
-            return BackendResult(request_id, "awaiting_human", reason="醫療、用藥或補助金額，依規定轉督導")
+            return BackendResult(request_id, "awaiting_human", reason="醫療或用藥，依規定轉督導",
+                                 refusal_reason="sensitive")
         answer = f"（模擬後端回答，非真實法規內容）已收到你的問題：「{text}」。意圖：{intent or '未判定'}。出處：模擬資料。"
         return BackendResult(request_id, "answered", answer=answer)
 
@@ -94,6 +99,16 @@ class TrackedBackend:
         return result
 
 
+# 後端拒答原因 → 督導頁面顯示的轉督導原因
+REFUSAL_LABELS = {
+    "sensitive": "醫療、用藥或個案安全",
+    "kb_missing": "知識庫查無依據",
+    "low_confidence": "無法確認答案",
+    "ambiguous": "問題不夠明確",
+    "out_of_scope": "不在長照服務範圍",
+}
+
+
 # 意圖代碼（http-backend 第 4.3 節，草案，待後端組確認）
 INTENT_CODES = {
     "情緒安撫或閒聊": "emotional_support",
@@ -127,7 +142,9 @@ class HttpBackend:
     def query(self, payload: dict) -> BackendResult:
         body = {k: v for k, v in payload.items() if k != "client_request_id"}
         body.update({
-            "request_id": payload["client_request_id"], "role": "caregiver", "user_id": None,
+            # 身分以後端為準：user_id 為後端 biz.users 的編號，未綁定（例如管理員切換身分）時為 None
+            "request_id": payload["client_request_id"], "role": payload.get("role") or "caregiver",
+            "user_id": payload.get("user_id"),
             "keywords": payload.get("keywords") or [],
             "client_intent": {"code": INTENT_CODES.get(payload.get("intent")), "confidence": payload.get("intent_conf")},
             "label_set_version": LABEL_SET_VERSION, "lexicon_version": None, "client_timing_ms": None,
@@ -155,7 +172,8 @@ class HttpBackend:
         ends = [u["end_ms"] for u in utterances if u.get("end_ms") is not None]
         body = {k: v for k, v in payload.items() if k not in ("client_request_id", "utterances")}
         body.update({
-            "request_id": payload["client_request_id"], "caregiver_user_ids": [], "scene": None,
+            "request_id": payload["client_request_id"],
+            "caregiver_user_ids": [payload["user_id"]] if payload.get("user_id") else [], "scene": None,
             "intent_counts": counts, "segment_count": len(utterances),
             "caregiver_segment_count": sum(u.get("speaker_role") == "照護員" for u in utterances),
             "keywords": [], "duration_sec": round((max(ends) - min(starts)) / 1000, 1) if starts and ends else None,
@@ -184,14 +202,25 @@ class HttpBackend:
             if status == "human_answered":
                 return BackendResult(request_id, "answered", answer=data.get("human_answer"))
             if status == "refused":
-                help_id = data.get("help_request_id")
-                return BackendResult(request_id, "awaiting_human",
-                                     reason=f"後端拒答轉人工（求助單 {help_id}）" if help_id else "後端拒答轉人工")
+                return self._refused(request_id, data)
             if status != "pending":
                 return self._failed(request_id, f"後端狀態 {status}")
             if self._clock() >= deadline:
                 return self._failed(request_id, f"後端逾時（{self._timeout:g} 秒）")
             self._sleep(self._poll)
+
+    @staticmethod
+    def _refused(request_id: str, data: dict) -> BackendResult:
+        """依後端的 escalate 分流：需要督導定案的轉督導；範圍外、需追問的直接把說明給照護員。
+        舊版後端沒有 escalate 欄位時一律轉督導（寧可多轉）。"""
+        refusal = data.get("refusal_reason")
+        message = data.get("answer_full") or data.get("answer_spoken")
+        if not data.get("escalate", True) and message:
+            return BackendResult(request_id, "answered", answer=message, refusal_reason=refusal)
+        help_id = data.get("help_request_id")
+        label = REFUSAL_LABELS.get(refusal, "後端拒答")
+        reason = f"{label}，轉督導（求助單 {help_id}）" if help_id else f"{label}，轉督導"
+        return BackendResult(request_id, "awaiting_human", answer=message, reason=reason, refusal_reason=refusal)
 
     @staticmethod
     def _failed(request_id: str, reason: str) -> BackendResult:

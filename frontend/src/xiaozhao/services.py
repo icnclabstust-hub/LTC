@@ -49,13 +49,24 @@ def _hash_code(code: str) -> str:
 
 
 # ---------- 帳號與綁定 ----------
+# identity（identity.BackendIdentity）有值時以後端為準、本機 accounts 只當快取（BACKEND_MODE=http）；
+# 為 None 時（mock 模式、單元測試）維持本機帳號與綁定碼。
 
-def create_account(db: Database, display_name: str, role: str) -> tuple[dict, str]:
+def create_account(db: Database, display_name: str, role: str, identity=None) -> tuple[dict, str]:
     if role not in ("caregiver", "supervisor"):
         raise ServiceError("身分只能是 caregiver 或 supervisor")
     display_name = display_name.strip()
     if not display_name:
         raise ServiceError("姓名不可空白")
+    if identity is not None:
+        user = identity.create_user(display_name, role)
+        issued = identity.issue_code(user["user_id"])
+        cur = db.execute(
+            "INSERT INTO accounts (display_name, role, be_user_id, pseudonym, code_expires_at, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (display_name, role, user["user_id"], user["pseudonym"], _iso_to_epoch(issued["expires_at"]), now()),
+        )
+        return db.one("SELECT * FROM accounts WHERE id = ?", (cur.lastrowid,)), issued["code"]
     cur = db.execute(
         "INSERT INTO accounts (display_name, role, created_at) VALUES (?, ?, ?)", (display_name, role, now())
     )
@@ -63,13 +74,27 @@ def create_account(db: Database, display_name: str, role: str) -> tuple[dict, st
     return db.one("SELECT * FROM accounts WHERE id = ?", (cur.lastrowid,)), code
 
 
-def issue_binding_code(db: Database, account_id: int) -> str:
+def _iso_to_epoch(value: str) -> float:
+    from datetime import datetime, timezone
+
+    # 後端以 UTC naive datetime 回傳
+    return datetime.fromisoformat(value).replace(tzinfo=timezone.utc).timestamp()
+
+
+def issue_binding_code(db: Database, account_id: int, identity=None) -> str:
     """產生一次性綁定碼，只存雜湊值；同帳號舊的未使用綁定碼一併作廢。"""
     account = db.one("SELECT * FROM accounts WHERE id = ?", (account_id,))
     if account is None:
         raise NotFound("帳號不存在")
     if account["status"] == "disabled":
         raise Conflict("帳號已停用")
+    if identity is not None:
+        if not account["be_user_id"]:
+            raise Conflict("這個帳號建立於串接後端之前，請停用後重新建立")
+        issued = identity.issue_code(account["be_user_id"])
+        db.execute("UPDATE accounts SET code_expires_at = ? WHERE id = ?",
+                   (_iso_to_epoch(issued["expires_at"]), account_id))
+        return issued["code"]
     code = "".join(secrets.choice(_CODE_ALPHABET) for _ in range(CODE_LENGTH))
     with db.transaction() as conn:
         conn.execute("DELETE FROM binding_codes WHERE account_id = ? AND used_at IS NULL", (account_id,))
@@ -80,7 +105,11 @@ def issue_binding_code(db: Database, account_id: int) -> str:
     return code
 
 
-def bind(db: Database, code: str, line_user_id: str) -> dict:
+def bind(db: Database, code: str, line_user_id: str, identity=None) -> dict:
+    if identity is not None:
+        if active_account(db, line_user_id) is not None:
+            raise Conflict("這個 LINE 帳號已經綁定過")
+        return _cache_backend_user(db, identity.bind(code, line_user_id), line_user_id)
     with db.transaction() as conn:
         row = conn.execute("SELECT * FROM binding_codes WHERE code_hash = ?", (_hash_code(code),)).fetchone()
         if row is None or row["used_at"] is not None or row["expires_at"] < now():
@@ -97,17 +126,55 @@ def bind(db: Database, code: str, line_user_id: str) -> dict:
     return db.one("SELECT * FROM accounts WHERE id = ?", (account["id"],))
 
 
-def disable_account(db: Database, account_id: int) -> dict:
-    if db.one("SELECT 1 FROM accounts WHERE id = ?", (account_id,)) is None:
-        raise NotFound("帳號不存在")
+def _cache_backend_user(db: Database, user: dict, line_user_id: str) -> dict:
+    """把後端的使用者寫進本機快取；後端允許停用後以同一 LINE 帳號改綁，舊的本機列要先讓出 line_user_id。"""
     with db.transaction() as conn:
-        conn.execute("UPDATE accounts SET status = 'disabled' WHERE id = ?", (account_id,))
+        conn.execute("UPDATE accounts SET line_user_id = NULL WHERE line_user_id = ? AND be_user_id IS NOT ?",
+                     (line_user_id, user["user_id"]))
+        row = conn.execute("SELECT id FROM accounts WHERE be_user_id = ?", (user["user_id"],)).fetchone()
+        if row is None:
+            conn.execute(
+                "INSERT INTO accounts (display_name, role, line_user_id, status, be_user_id, pseudonym, created_at)"
+                " VALUES (?, ?, ?, 'active', ?, ?, ?)",
+                (user["name"], user["role"], line_user_id, user["user_id"], user["pseudonym"], now()),
+            )
+        else:
+            conn.execute(
+                "UPDATE accounts SET display_name = ?, role = ?, line_user_id = ?, status = 'active', pseudonym = ?,"
+                " code_expires_at = NULL WHERE id = ?",
+                (user["name"], user["role"], line_user_id, user["pseudonym"], row["id"]),
+            )
+    return db.one("SELECT * FROM accounts WHERE be_user_id = ?", (user["user_id"],))
+
+
+def disable_account(db: Database, account_id: int, identity=None) -> dict:
+    account = db.one("SELECT * FROM accounts WHERE id = ?", (account_id,))
+    if account is None:
+        raise NotFound("帳號不存在")
+    if identity is not None and account["be_user_id"]:
+        identity.disable(account["be_user_id"])
+    with db.transaction() as conn:
+        conn.execute("UPDATE accounts SET status = 'disabled', code_expires_at = NULL WHERE id = ?", (account_id,))
         conn.execute("DELETE FROM binding_codes WHERE account_id = ? AND used_at IS NULL", (account_id,))
     return db.one("SELECT * FROM accounts WHERE id = ?", (account_id,))
 
 
-def active_account(db: Database, line_user_id: str) -> dict | None:
-    return db.one("SELECT * FROM accounts WHERE line_user_id = ? AND status = 'active'", (line_user_id,))
+def active_account(db: Database, line_user_id: str, identity=None) -> dict | None:
+    """先查本機快取；查不到且有串接後端時問後端（例如在別台 FE 綁定、或本機資料庫重建過）。"""
+    account = db.one("SELECT * FROM accounts WHERE line_user_id = ? AND status = 'active'", (line_user_id,))
+    if account is not None or identity is None:
+        return account
+    user = identity.lookup(line_user_id)
+    return _cache_backend_user(db, user, line_user_id) if user else None
+
+
+def caller_fields(db: Database, line_user_id: str) -> dict:
+    """送後端時的身分欄位：後端 user_id／role；有匿名代號時以代號取代姓名（後端不需要真名）。"""
+    account = db.one("SELECT * FROM accounts WHERE line_user_id = ? AND status = 'active'", (line_user_id,))
+    if account is None:
+        return {"caregiver_name": caregiver_name(db, line_user_id), "user_id": None, "role": "caregiver"}
+    return {"caregiver_name": account["pseudonym"] or caregiver_name(db, line_user_id),
+            "user_id": account["be_user_id"], "role": account["role"]}
 
 
 # ---------- 督導請求 ----------
@@ -115,14 +182,32 @@ def active_account(db: Database, line_user_id: str) -> dict | None:
 def create_supervisor_request(
     db: Database, caregiver_user_id: str, source: str, source_id: int,
     question: str, reason: str | None, backend_request_id: str | None, intent: str | None = None,
+    priority: str = "normal", category: str | None = None,
 ) -> int:
+    """category：emergency（緊急關鍵字）、user_requested（照護員要求轉督導）、其餘為後端拒答原因。"""
     cur = db.execute(
         "INSERT INTO supervisor_requests (caregiver_line_user_id, source, source_id, question, reason,"
-        " backend_request_id, intent, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (caregiver_user_id, source, source_id, question, reason, backend_request_id, intent, now()),
+        " backend_request_id, intent, priority, category, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (caregiver_user_id, source, source_id, question, reason, backend_request_id, intent, priority, category,
+         now()),
     )
-    logger.info("新增督導請求 %d（來源 %s %d）", cur.lastrowid, source, source_id)
+    logger.info("新增督導請求 %d（來源 %s %d，%s）", cur.lastrowid, source, source_id, priority)
     return cur.lastrowid
+
+
+def create_emergency_request(db: Database, caregiver_user_id: str, source: str, source_id: int,
+                             question: str, match) -> int:
+    """緊急關鍵字命中（emergency.EmergencyMatch）：建立最優先的督導請求。"""
+    level = "一級" if match.level == 1 else "二級"
+    return create_supervisor_request(db, caregiver_user_id, source, source_id, question,
+                                     f"緊急（{level}）：{match.category}", None, priority="urgent",
+                                     category="emergency")
+
+
+def active_supervisor_line_ids(db: Database) -> list[str]:
+    return [r["line_user_id"] for r in db.all(
+        "SELECT line_user_id FROM accounts WHERE role = 'supervisor' AND status = 'active'"
+        " AND line_user_id IS NOT NULL")]
 
 
 _SOURCE_TABLES = {"turn": "turns", "line_case": "line_cases", "text_question": "text_questions"}

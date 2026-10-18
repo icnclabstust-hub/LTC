@@ -86,6 +86,9 @@ async def test_query_returns_202_then_answer_with_verbatim_quote(pipeline_calls)
 
         polled = (await client.get(f"/v1/requests/{body['request_id']}", headers=_AUTH)).json()
 
+    # FE HttpBackend（frontend/src/xiaozhao/backend.py _poll_result／_refused）讀取的欄位
+    assert {"status", "answer_full", "answer_spoken", "human_answer", "help_request_id", "refusal_reason",
+            "escalate", "citations"} <= polled.keys()
     assert polled["status"] == "answered"
     assert polled["answer_spoken"] == "摘要回答"
     assert "長期照顧服務法第三條原文" in polled["answer_full"]

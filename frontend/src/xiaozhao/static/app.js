@@ -449,7 +449,7 @@ async function renderHelp(view) {
   view.append(
     section('小照可以做什麼',
       '錄音模式：記錄照護現場多人、多輪的對話，判斷每句的意圖，需要時向後端查詢答案。',
-      'LINE 案件：在聊天室輸入「小照你好」開頭的文字提問，例如「小照你好，我可以幫長輩代購藥物嗎？」；回答在「我的案件」查看。',
+      'LINE 案件：在聊天室直接輸入文字提問（開頭加不加「小照你好」都可以），例如「我可以幫長輩代購藥物嗎？」；回答在「我的案件」查看。輸入「直接問督導：問題」可不經小照直接轉督導。',
       '我的案件：查看 LINE 提問的回答、錄音的逐字稿（含確認狀態），以及轉給督導的問題與督導回覆。',
       '今日狀況回報：口述當天照護的住民與狀況，轉成文字送到督導頁面（保存 24 小時）。',
       '轉督導：小照無法回答的問題會轉給督導，督導回覆後會用 LINE 通知你。'),
@@ -463,7 +463,7 @@ async function renderHelp(view) {
       '在場者不同意錄音時，可以改用「手動打字提問」。'),
     section('小照會回答哪些問題',
       '只回答規範查詢（規定、流程、資格等制度面問題），並附上出處。',
-      '醫療、用藥、補助金額，以及知識庫沒有依據的問題，一律轉給督導回覆。',
+      '醫療、用藥，以及知識庫沒有依據的問題，一律轉給督導回覆；緊急狀況（沒有呼吸、噎到、跌倒…）會立即回覆急救指引並通知督導。',
       '小照不會提供醫療建議；身體不適或緊急狀況請依機構流程處理。'),
     section('知識庫法規涵蓋範圍',
       '以住宿式長照機構為主：機構相關法規、機構內規、作業程序。',
@@ -946,7 +946,7 @@ async function renderLineCases(view) {
   const cases = await api('GET', '/api/line-cases');
   view.append(h('div', { class: 'card' },
     h('h2', {}, 'LINE 案件（保存 1 天）'),
-    h('p', { class: 'muted' }, '在聊天室輸入「小照你好」開頭的文字提問，會出現在這裡。'),
+    h('p', { class: 'muted' }, '在聊天室直接輸入的文字提問，會出現在這裡。'),
     cases.length ? null : h('p', { class: 'muted' }, '目前沒有案件。'),
     ...cases.map((c) => h('div', { class: 'list-item' },
       c.answer ? h('div', { class: `answer ${c.status === 'human_answered' ? 'human' : ''}` }, c.answer)
@@ -1232,8 +1232,10 @@ async function renderAdmin(view) {
   const role = h('select', {}, h('option', { value: 'caregiver' }, '照護員'), h('option', { value: 'supervisor' }, '督導'));
   const result = h('div', {});
 
-  function showCode(title, code) {
-    showDialog(h('h3', {}, title), h('p', {}, '請把綁定碼交給本人；24 小時內有效、只能使用一次。關閉後無法再查看。'),
+  // 效期由伺服器決定：本機模式 24 小時，串接後端時 10 分鐘（2026-10-19）
+  function showCode(title, code, expiresAt) {
+    const validity = expiresAt ? `${fmtTime(expiresAt)} 前有效` : '有效期限內';
+    showDialog(h('h3', {}, title), h('p', {}, `請把綁定碼交給本人；${validity}、只能使用一次。關閉後無法再查看。`),
       h('p', { class: 'code' }, code));
   }
 
@@ -1244,7 +1246,7 @@ async function renderAdmin(view) {
         onclick: async () => {
           try {
             const r = await api('POST', '/api/admin/accounts', { display_name: name.value, role: role.value });
-            showCode(`${r.account.display_name}（${ROLE_NAMES[r.account.role]}）的綁定碼`, r.binding_code);
+            showCode(`${r.account.display_name}（${ROLE_NAMES[r.account.role]}）的綁定碼`, r.binding_code, r.expires_at);
             go('admin');
           } catch (err) { result.replaceChildren(errorBox(err)); }
         },
@@ -1257,7 +1259,7 @@ async function renderAdmin(view) {
           h('td', {}, a.status === 'disabled' ? '已停用' : (a.bound ? '已綁定' : `待綁定${a.code_expires_at ? `（碼至 ${fmtTime(a.code_expires_at)}）` : '（碼已失效）'}`)),
           h('td', {}, a.status !== 'disabled' && !a.bound ? h('button', { class: 'secondary', type: 'button', onclick: async () => {
             const r = await api('POST', `/api/admin/accounts/${a.id}/binding-code`);
-            showCode(`${a.display_name} 的新綁定碼`, r.binding_code);
+            showCode(`${a.display_name} 的新綁定碼`, r.binding_code, r.expires_at);
             go('admin');
           } }, '重新產生') : null,
           a.status !== 'disabled' ? h('button', { class: 'danger', type: 'button', onclick: async () => {

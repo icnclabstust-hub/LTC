@@ -23,6 +23,7 @@ class RecordingLine(LineService):
     def __init__(self, *args, fail_push=False, **kwargs):
         super().__init__(*args, **kwargs)
         self.sent: list[tuple[str, str]] = []
+        self.loading: list[tuple[str, float]] = []
         self.fail_push = fail_push
 
     def _reply_messages(self, reply_token, messages):
@@ -35,6 +36,9 @@ class RecordingLine(LineService):
             return False
         self.sent.append(("push", text))
         return True
+
+    def show_loading(self, user_id, seconds):
+        self.loading.append((user_id, seconds))
 
     def link_menu(self, user_id, role):
         self.sent.append(("menu", role))
@@ -194,7 +198,8 @@ def test_supervisor_reply_updates_source_and_pushes(client, db, state):
     bind_user(db, "Ucare", "caregiver", "照護員甲")
     bind_user(db, "Usup", "supervisor", "督導乙")
     rid = client.post("/api/residents", json={"alias": "住民 A"}, headers=as_user("Ucare")).json()["id"]
-    q = client.post(f"/api/residents/{rid}/text-questions", json={"question": "補助金額是多少"},
+    # 補助金額依 2026-10-19 題庫改為可回答；改用用藥問題觸發轉督導
+    q = client.post(f"/api/residents/{rid}/text-questions", json={"question": "這顆藥可以磨成粉嗎"},
                     headers=as_user("Ucare")).json()
     assert q["status"] == "awaiting_human"
     requests = client.get("/api/supervisor/requests", headers=as_user("Usup")).json()
@@ -275,17 +280,25 @@ def test_webhook_rejects_bad_signature(client):
     assert res.status_code == 400
 
 
-def test_webhook_prefix_filter_and_dedup(client, db, settings, state):
+def test_webhook_strips_optional_wake_word_and_dedups(client, db, settings, state):
+    """2026-10-19 需求決議：文字訊息免喚醒詞；開頭有「小照你好」（或說反）就去掉。"""
     bind_user(db, "Ucare", "caregiver")
     event = text_event("E1", "M1", "小照你好，家屬要我幫忙代購，機構規定可以嗎？")
     assert post_webhook(client, settings, [event]).status_code == 200
     assert post_webhook(client, settings, [event]).status_code == 200  # 重送
-    post_webhook(client, settings, [text_event("E2", "M2", "今天天氣很好")])
-    cases = db.all("SELECT * FROM line_cases")
-    assert len(cases) == 1
-    assert cases[0]["question"] == "家屬要我幫忙代購，機構規定可以嗎？"
-    assert cases[0]["status"] == "answered"
-    assert len([s for s in state.line.sent if s[0] == "reply"]) == 1
+    post_webhook(client, settings, [text_event("E2", "M2", "喘息服務怎麼申請？")])
+    post_webhook(client, settings, [text_event("E5", "M5", "你好小照，輔具怎麼借？")])
+    cases = db.all("SELECT * FROM line_cases ORDER BY id")
+    assert [c["question"] for c in cases] == ["家屬要我幫忙代購，機構規定可以嗎？", "喘息服務怎麼申請？", "輔具怎麼借？"]
+    assert all(c["status"] == "answered" for c in cases)
+    assert len([s for s in state.line.sent if s[0] == "reply"]) == 3
+
+
+def test_webhook_wake_word_only_asks_for_question(client, db, settings, state):
+    bind_user(db, "Ucare", "caregiver")
+    post_webhook(client, settings, [text_event("E6", "M6", "小照你好")])
+    assert db.all("SELECT * FROM line_cases") == []
+    assert "請直接輸入你的問題" in state.line.sent[-1][1]
 
 
 def test_webhook_unbound_user_gets_bind_prompt(client, db, settings, state):

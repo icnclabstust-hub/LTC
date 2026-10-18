@@ -103,11 +103,13 @@ def test_text_question_returns_pending_then_answer(settings, db):
 
 def test_line_case_tells_still_querying_then_pushes_answer(settings, db):
     backend, runner = GatedBackend(), BackgroundRunner(2, inline=False)
-    line = RecordingLine(dataclasses.replace(settings, reply_target_seconds=0.05), db, TrackedBackend(backend, None),
-                         runner=runner)
+    # LINE 聊天室改等 line_reply_wait_seconds（先顯示輸入中動畫），超過才回「還在查詢」（2026-10-19）
+    line = RecordingLine(dataclasses.replace(settings, line_reply_wait_seconds=0.05), db,
+                         TrackedBackend(backend, None), runner=runner)
     event = SimpleNamespace(message=SimpleNamespace(id="m1"), reply_token="rt")
     line._create_line_case(event, "Ucare", "長照補助怎麼申請")
     assert line.sent == [("reply", STILL_QUERYING_TEXT)]
+    assert line.loading == [("Ucare", 0.05)]
     backend.gate.set()
     assert wait_until(lambda: len(line.sent) == 2)
     assert line.sent[1][0] == "push" and "長照補助怎麼申請" in line.sent[1][1]

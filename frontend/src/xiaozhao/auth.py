@@ -59,10 +59,10 @@ class IdTokenVerifier:
 
 
 def resolve_principal(
-    db: Database, settings: Settings, user_id: str, line_name: str, acting_role: str | None,
+    db: Database, settings: Settings, user_id: str, line_name: str, acting_role: str | None, identity=None,
 ) -> Principal:
     is_admin = user_id in settings.admin_user_ids
-    account = services.active_account(db, user_id)
+    account = services.active_account(db, user_id, identity)
     if is_admin:
         role = acting_role if acting_role in ROLES else "admin"
         name = account["display_name"] if account else (line_name or "管理員")

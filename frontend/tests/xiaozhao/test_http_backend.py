@@ -58,7 +58,7 @@ def test_query_posts_contract_fields_and_polls_answer():
 
 
 @pytest.mark.parametrize("final, status, text", [
-    ({"status": "refused", "help_request_id": "h9"}, "awaiting_human", "後端拒答轉人工（求助單 h9）"),
+    ({"status": "refused", "help_request_id": "h9"}, "awaiting_human", "後端拒答，轉督導（求助單 h9）"),
     ({"status": "human_answered", "human_answer": "主管：可以"}, "answered", "主管：可以"),
     ({"status": "error"}, "awaiting_human", "後端狀態 error"),
 ])
@@ -114,7 +114,10 @@ def test_fake_backend_tool_round_trip(monkeypatch):
     http = HttpBackend("http://testserver", token="abc", transport=httpx.MockTransport(relay), sleep=lambda s: None)
     assert http.query(QUERY).status == "answered"
     refused = http.query({**QUERY, "client_request_id": "r2", "text": "這個藥可以磨碎嗎？"})
-    assert (refused.status, refused.reason) == ("awaiting_human", "後端拒答轉人工（求助單 help-r2）")
+    assert (refused.status, refused.reason) == ("awaiting_human", "醫療、用藥或個案安全，轉督導（求助單 help-r2）")
+    assert refused.refusal_reason == "sensitive" and "醫療" in refused.answer
+    out_of_scope = http.query({**QUERY, "client_request_id": "r3", "text": "今天天氣怎麼樣？"})
+    assert (out_of_scope.status, out_of_scope.refusal_reason) == ("answered", "out_of_scope")
     wrong = HttpBackend("http://testserver", token="wrong", transport=httpx.MockTransport(relay))
     assert wrong.query(QUERY).reason == "後端回應 401"
 

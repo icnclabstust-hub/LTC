@@ -4,7 +4,8 @@
 
 - ① POST /v1/query、② POST /v1/scene：回 202 與 request_id（同一 request_id 重送不重複處理）。
 - ③ GET /v1/requests/{id}：前 ANSWER_DELAY_SECONDS 秒回 pending，之後回 answered；
-  文字含「藥、醫、病、補助」時回 refused（模擬拒答轉人工，附 help_request_id）。
+  文字含「藥、醫、病」時回 refused（sensitive，轉督導，附 help_request_id）；
+  含「天氣」時回 refused（out_of_scope，不轉督導），欄位與 LTC-BE 的 /v1/requests/{id} 相同。
 - 設環境變數 FAKE_BACKEND_TOKEN 時檢查 Authorization: Bearer <token>。
 
 用法：python tools/fake_backend.py [--port 8001]
@@ -20,7 +21,8 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 ANSWER_DELAY_SECONDS = 1.0
-REFUSE = re.compile(r"藥|醫|病|補助")
+REFUSE = re.compile(r"藥|醫|病")
+OUT_OF_SCOPE = re.compile(r"天氣")
 
 
 def create_app(token: str = "") -> FastAPI:
@@ -59,7 +61,12 @@ def create_app(token: str = "") -> FastAPI:
             return {"request_id": rid, "status": "pending"}
         text = item["body"].get("text") or ""
         if REFUSE.search(text):
-            return {"request_id": rid, "status": "refused", "help_request_id": f"help-{rid[:8]}"}
+            return {"request_id": rid, "status": "refused", "refusal_reason": "sensitive", "escalate": True,
+                    "answer_full": "這個問題涉及醫療、用藥或個案安全，須由督導或醫護人員判斷。",
+                    "help_request_id": f"help-{rid[:8]}"}
+        if OUT_OF_SCOPE.search(text):
+            return {"request_id": rid, "status": "refused", "refusal_reason": "out_of_scope", "escalate": False,
+                    "answer_full": "這個問題不在長照服務範圍內；如果需要督導協助，請輸入「轉交給督導」。"}
         answer = f"（假後端回答，非真實內容）已收到：「{text}」"
         return {"request_id": rid, "status": "answered", "answer_spoken": answer[:40], "answer_full": answer,
                 "citations": [], "faithfulness": None}

@@ -2,6 +2,25 @@
 
 依 [docs/designs/2026-09-13-ltc-rag-backend.md](docs/designs/2026-09-13-ltc-rag-backend.md) 設計文件實作，通過 GD 設計閘門（見 [assessment](docs/designs/2026-09-13-ltc-rag-backend-assessment.md)）。
 
+## 專案結構（2026-10-19 起前後端合併）
+
+本 repo 同時包含後端與前端，兩個服務分開執行（依賴版本互斥，見 [設計文件](docs/designs/2026-10-19-xiaozhao-fe-be-integration.md) 第 4.1 節）：
+
+| 目錄 | 內容 | Python | port |
+|---|---|---|---|
+| `src/`、`tests/`、`migrations/` | 後端 LTC-BE：RAG、小照 API（`/v1/query`、`/v1/requests/{id}`、身分 API）、Open WebUI 端點 | 3.12 | 8001 |
+| `frontend/` | 前端小照：LINE bot（**官方帳號唯一的 webhook**）、LIFF 網頁、錄音 ASR | 3.14 | 8010 |
+| `eval/golden_queries.csv` | 測試題庫 v0.4（兩邊的規則回歸測試共用） | | |
+
+串接方式：
+
+1. 後端 `.env` 設 `XIAOZHAO_API_TOKEN`，前端 `frontend/.env` 設 `BACKEND_MODE=http`、`BACKEND_URL=http://127.0.0.1:8001`、`BACKEND_TOKEN`（與後端相同）。
+2. 後端 `alembic upgrade head` 後啟動（見下方「執行」）；前端依 `frontend/src/xiaozhao/README.md` 啟動。
+3. LINE Developers Console → Messaging API → Webhook URL 只設前端的 `https://<ngrok 網域>/callback`（後端已不再有 LINE webhook）。
+4. 冒煙測試：在 `frontend/` 執行 `python tools/backend_smoke.py --token <BACKEND_TOKEN>`。
+
+http 模式下帳號與綁定以後端為準（綁定碼 6 位數、10 分鐘有效），前端 SQLite 只當快取。
+
 ## 範圍
 
 - 法規／SOP 問答（Naive RAG：ChromaDB 檢索 → Reranker → 證據判定 → 忠實度守門員 → Ollama 生成）
@@ -52,14 +71,15 @@ uvicorn app.main:app --app-dir src --reload --port 8001
 
 ```bash
 pip install -r requirements-dev.txt
-pytest tests
+pytest                      # 後端（需要本機 PostgreSQL 已 alembic upgrade head、Redis）
+cd frontend && pytest       # 前端（另一個 venv，見 frontend/requirements-xiaozhao.txt）
 ```
 
 ## 已知缺口（見設計文件第 9 節）
 
 - `CODING_STYLE.md`／`CODE_REVIEW_STANDARD.md` 尚未提供完整內容，本次實作依一般通用慣例撰寫，待補齊後需對齊調整
 - NLI 精篩模型尚未選型，`src/app/core/faithfulness.py` 中以介面預留（`NliChecker`），MVP 先以字元 bigram 重疊率暫代粗篩與精篩兩階段的分數計算
-- 證據判定（`evidence.py`）雖回傳「足夠／不足／模糊」三態，但 MVP 路由（`routes_query.py`）目前將「不足」與「模糊」一併導向拒答，尚未實作「模糊」的獨立處理（例如轉人工），為架構圖與此 MVP 的已知簡化
+- 證據判定（`evidence.py`）的「不足」與「模糊」皆拒答，2026-10-19 起以 `refusal_reason`（`kb_missing`／`out_of_scope`／`low_confidence`）區分，`low_confidence`、`kb_missing` 轉督導；原 `/api/query`（`routes_query.py`）已由 `/v1/query` 取代並移除
 - 法規資料排程同步（`sync_law_documents`）與正式 PostgreSQL migration（如 alembic）尚未撰寫；目前僅有 `scripts/dev_bootstrap.py`（標註 throwaway）用 `Base.metadata.create_all` 建表供開發測試，不是正式 migration 流程
 - **embedding 模型已換成本機 Ollama 的 `bge-m3`**（`src/app/core/embedding.py`，`OllamaEmbeddingFunction`），取代 ChromaDB 預設英文語料訓練的 all-MiniLM-L6-v2
 - **重大 bug 已修正**：ChromaDB 建立 collection 若未指定 `hnsw:space: cosine`，預設用 squared L2 距離（數值可到 -500 這種無意義範圍），而 `evidence.py` 的 `similarity = 1 - distance` 假設是 cosine 距離（0~2），兩者不match 會導致幾乎所有查詢都被判定「證據不足」而拒答，即使檢索排序本身是對的。已在 `retrieval.py` 新增 `get_chunk_collection()` 共用函式統一指定 cosine 距離，`load_real_law.py`／`dev_bootstrap.py` 寫入時也必須呼叫同一函式，否則向量空間不一致

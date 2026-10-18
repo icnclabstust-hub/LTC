@@ -102,13 +102,19 @@ class Settings:
     backend_url: str = ""
     backend_token: str = ""
     backend_poll_seconds: float = 0.1
-    # 最長等待（逾時轉督導）；回覆目標 3 秒（P95，10/05 會議決議）由 reply_target_seconds 處理
-    backend_timeout_seconds: float = 30.0
+    # 最長等待（逾時轉督導）；回覆目標 3 秒（P95，10/05 會議決議）由 reply_target_seconds 處理。
+    # 預設 120 秒，與後端生成逾時對齊：後端實測 9–33 秒，30 秒會在答案還在生成時就先轉督導（2026-10-19 fe-be-integration）
+    backend_timeout_seconds: float = 120.0
     backend_scene_text: bool = True
     # 後端呼叫在背景執行（http 模式；2026-10-14 async-backend）；超過 reply_target_seconds 先告知「還在查詢」
     backend_async: bool = True
     backend_workers: int = 4
     reply_target_seconds: float = 3.0
+    # LINE 聊天室：先顯示「輸入中」動畫（不計費），最多等這麼久再用 reply 回答；超過才回「還在查詢」、之後 push。
+    # 免費方案每月只有 200 則 push（2026-10-19 需求決議第 4 項）；reply token 有效時間 LINE 未公開，50 秒為保守值待實測
+    line_reply_wait_seconds: float = 50.0
+    # 緊急固定回覆附上的機構電話（嘉安居服，依店面招牌，待機構確認）
+    agency_phone: str = "05-2778785"
     # 測試用：略過 LINE ID token 驗證，直接把 Bearer 值當成 userId（只允許綁 127.0.0.1 時使用）
     dev_fake_auth: bool = False
     model_downloads: Path = field(default=MODEL_DOWNLOADS)
@@ -154,11 +160,13 @@ def load_settings() -> Settings:
         backend_url=env.get("BACKEND_URL", ""),
         backend_token=env.get("BACKEND_TOKEN", ""),
         backend_poll_seconds=float(env.get("BACKEND_POLL_SECONDS", "0.1")),
-        backend_timeout_seconds=float(env.get("BACKEND_TIMEOUT_SECONDS", "30")),
+        backend_timeout_seconds=float(env.get("BACKEND_TIMEOUT_SECONDS", "120")),
         backend_scene_text=env.get("BACKEND_SCENE_TEXT", "1") != "0",
         backend_async=env.get("BACKEND_ASYNC", "1") != "0",
         backend_workers=int(env.get("BACKEND_WORKERS", "4")),
         reply_target_seconds=float(env.get("REPLY_TARGET_SECONDS", "3")),
+        line_reply_wait_seconds=float(env.get("LINE_REPLY_WAIT_SECONDS", "50")),
+        agency_phone=env.get("AGENCY_PHONE", "05-2778785"),
         dev_fake_auth=env.get("XIAOZHAO_DEV_FAKE_AUTH", "") == "1",
     )
 
