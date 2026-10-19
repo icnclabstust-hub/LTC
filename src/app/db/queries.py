@@ -68,7 +68,9 @@ async def log_conversation(
 
     MVP 階段每次請求各自建立一筆 conversation（單輪記錄），
     多輪對話串接留待之後有實際需求再設計。
+    結構化答案的出處（ltc: 開頭，見 ltc_graph）不是 catalog.chunks，不列入召回率取樣。
     """
+    cited_chunk_ids = [cid for cid in cited_chunk_ids if not cid.startswith("ltc:")]
     conversation = Conversation()
     session.add(conversation)
     await session.flush()

@@ -1,7 +1,19 @@
 import uuid
 from datetime import date, datetime
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    Date,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    SmallInteger,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -58,6 +70,108 @@ class LtcPoint(Base):
     address: Mapped[str] = mapped_column(Text)
     phone: Mapped[str | None] = mapped_column(Text, nullable=True)
     synced_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    # 2026-10-19 ltc-kb-graph：Neo4j 資源地理層用（縣市／鄉鎮為內政部行政區代碼）
+    county_code: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    town_code: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    town_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    abc_level: Mapped[str | None] = mapped_column(String(4), nullable=True)
+    service_names: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
+    service_area_codes: Mapped[list[str] | None] = mapped_column(ARRAY(String(16)), nullable=True)
+
+
+class _SourcedMixin:
+    """結構化長照資料共通欄位：出處與有效期間（valid_to 為 NULL 表示現行，見 2026-10-19 ltc-kb-graph 5.1 節）。"""
+
+    source_url: Mapped[str] = mapped_column(Text)
+    source_ref: Mapped[str] = mapped_column(Text)
+    valid_from: Mapped[date] = mapped_column(Date)
+    valid_to: Mapped[date | None] = mapped_column(Date, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class LtcBenefitCategory(_SourcedMixin, Base):
+    __tablename__ = "ltc_benefit_categories"
+    __table_args__ = {"schema": "catalog"}
+
+    code: Mapped[str] = mapped_column(String(16), primary_key=True)
+    name: Mapped[str] = mapped_column(Text)
+    service_code_prefixes: Mapped[str] = mapped_column(String(16))
+    period: Mapped[str] = mapped_column(String(8))
+
+
+class LtcQuota(_SourcedMixin, Base):
+    __tablename__ = "ltc_quotas"
+    __table_args__ = {"schema": "catalog"}
+
+    quota_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    category: Mapped[str] = mapped_column(ForeignKey("catalog.ltc_benefit_categories.code"))
+    need_level: Mapped[int] = mapped_column(SmallInteger)
+    zone: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+    item_group: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+    amount: Mapped[int] = mapped_column(Integer)
+    period: Mapped[str] = mapped_column(String(8))
+
+
+class LtcIdentityClass(_SourcedMixin, Base):
+    __tablename__ = "ltc_identity_classes"
+    __table_args__ = {"schema": "catalog"}
+
+    class_no: Mapped[int] = mapped_column(SmallInteger, primary_key=True)
+    name: Mapped[str] = mapped_column(Text)
+    definition: Mapped[str] = mapped_column(Text)
+
+
+class LtcCopayRate(_SourcedMixin, Base):
+    __tablename__ = "ltc_copay_rates"
+    __table_args__ = {"schema": "catalog"}
+
+    rate_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    category: Mapped[str] = mapped_column(ForeignKey("catalog.ltc_benefit_categories.code"))
+    identity_class: Mapped[int] = mapped_column(ForeignKey("catalog.ltc_identity_classes.class_no"))
+    zone: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+    rate_pct: Mapped[int] = mapped_column(SmallInteger)
+
+
+class LtcTransportZone(_SourcedMixin, Base):
+    __tablename__ = "ltc_transport_zones"
+    __table_args__ = {"schema": "catalog"}
+
+    zone_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    county: Mapped[str] = mapped_column(Text)
+    town: Mapped[str | None] = mapped_column(Text, nullable=True)
+    zone: Mapped[int] = mapped_column(SmallInteger)
+
+
+class LtcServiceItem(_SourcedMixin, Base):
+    __tablename__ = "ltc_service_items"
+    __table_args__ = {"schema": "catalog"}
+
+    code: Mapped[str] = mapped_column(String(16), primary_key=True)
+    name: Mapped[str] = mapped_column(Text)
+    category: Mapped[str | None] = mapped_column(ForeignKey("catalog.ltc_benefit_categories.code"), nullable=True)
+    price: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    unit: Mapped[str | None] = mapped_column(Text, nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class LtcEligibleGroup(_SourcedMixin, Base):
+    __tablename__ = "ltc_eligible_groups"
+    __table_args__ = {"schema": "catalog"}
+
+    group_key: Mapped[str] = mapped_column(String(32), primary_key=True)
+    name: Mapped[str] = mapped_column(Text)
+
+
+class SyncCursor(Base):
+    """各訂閱者（目前為 neo4j）的同步進度，架構圖 catalog schema 的 sync_cursor。"""
+
+    __tablename__ = "sync_cursor"
+    __table_args__ = {"schema": "catalog"}
+
+    subscriber: Mapped[str] = mapped_column(String(32), primary_key=True)
+    last_synced_at: Mapped[datetime] = mapped_column(DateTime)
+    last_version: Mapped[str] = mapped_column(String(64))
+    detail: Mapped[dict] = mapped_column(JSONB)
 
 
 class User(Base):
@@ -217,4 +331,23 @@ class GoldenQuery(Base):
     relevant_chunk_ids: Mapped[list[uuid.UUID]] = mapped_column(ARRAY(UUID(as_uuid=True)), default=list)
     category: Mapped[str | None] = mapped_column(String(64), nullable=True)
     source_feedback_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    # 由 eval/golden_queries.csv 匯入（2026-10-19 ltc-kb-graph 5.1 節）
+    question_id: Mapped[str | None] = mapped_column(String(16), unique=True, nullable=True)
+    expected_behavior: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    expected_refusal_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    escalate: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+
+
+class EvalAlert(Base):
+    """評測告警（架構圖：Recall/nDCG 下降 >10%、拒答率上升 >15%）。"""
+
+    __tablename__ = "alerts"
+    __table_args__ = {"schema": "eval"}
+
+    alert_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    metric: Mapped[str] = mapped_column(String(64))
+    value: Mapped[float] = mapped_column(Float)
+    threshold: Mapped[float] = mapped_column(Float)
+    detail: Mapped[dict] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
