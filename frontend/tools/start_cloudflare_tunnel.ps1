@@ -57,13 +57,31 @@ try {
     if (-not $url) { throw "60 秒內沒有取得通道網址，請看紀錄：$log" }
     Write-Host "通道網址：$url"
 
+    # 新網址的 DNS 生效要幾秒；生效前 LINE 會回 400 Invalid webhook endpoint URL，所以先等通道連得上
+    $reachable = $false
+    for ($i = 0; $i -lt 30 -and -not $reachable; $i++) {
+        try {
+            Invoke-WebRequest "$url/liff/privacy.html" -UseBasicParsing -TimeoutSec 5 | Out-Null
+            $reachable = $true
+        } catch { Start-Sleep -Seconds 2 }
+    }
+    if (-not $reachable) { Write-Host '通道網址 60 秒內仍連不上，仍嘗試設定 Webhook…' -ForegroundColor Yellow }
+
     $headers = @{ Authorization = "Bearer $token" }
     $body = @{ endpoint = "$url/callback" } | ConvertTo-Json
-    try {
-        Invoke-RestMethod -Method Put -Uri 'https://api.line.me/v2/bot/channel/webhook/endpoint' -Headers $headers `
-            -ContentType 'application/json; charset=utf-8' -Body $body | Out-Null
-    } catch {
-        throw "更新 LINE Webhook 失敗（$($_.Exception.Message)）。401 表示 LINE_CHANNEL_ACCESS_TOKEN 錯誤或已失效；也可手動到 LINE Developers Console 把 Webhook URL 設為 $url/callback"
+    $set = $false
+    for ($i = 0; $i -lt 6 -and -not $set; $i++) {
+        try {
+            Invoke-RestMethod -Method Put -Uri 'https://api.line.me/v2/bot/channel/webhook/endpoint' -Headers $headers `
+                -ContentType 'application/json; charset=utf-8' -Body $body | Out-Null
+            $set = $true
+        } catch {
+            $err = $_
+            if ($i -lt 5) { Write-Host "設定 Webhook 尚未成功（$($err.ErrorDetails.Message)），5 秒後重試…"; Start-Sleep -Seconds 5 }
+        }
+    }
+    if (-not $set) {
+        throw "更新 LINE Webhook 失敗（$($err.Exception.Message) $($err.ErrorDetails.Message)）。401 表示 LINE_CHANNEL_ACCESS_TOKEN 錯誤或已失效；也可手動到 LINE Developers Console 把 Webhook URL 設為 $url/callback"
     }
     Write-Host "已把 LINE Webhook 設為 $url/callback"
 
