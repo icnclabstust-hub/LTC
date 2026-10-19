@@ -311,7 +311,9 @@ _warned = False
 def _neo4j():
     global _driver
     if _driver is None:
-        _driver = AsyncGraphDatabase.driver(settings.neo4j_uri, auth=(settings.neo4j_user, settings.neo4j_password))
+        # valid_to 只在資料到期時才寫入，平時查詢「valid_to IS NULL」會一直收到「屬性不存在」提醒，關掉這類提醒
+        _driver = AsyncGraphDatabase.driver(settings.neo4j_uri, auth=(settings.neo4j_user, settings.neo4j_password),
+                                            notifications_disabled_categories=["UNRECOGNIZED"])
     return _driver
 
 

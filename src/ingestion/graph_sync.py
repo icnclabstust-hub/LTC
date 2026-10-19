@@ -137,7 +137,8 @@ async def run() -> bool:
     nodes, rels = build_graph(*await _load_catalog())
     version = datetime.utcnow().strftime("%Y%m%dT%H%M%S")
     stats: dict[str, int] = {}
-    driver = AsyncGraphDatabase.driver(settings.neo4j_uri, auth=(settings.neo4j_user, settings.neo4j_password))
+    driver = AsyncGraphDatabase.driver(settings.neo4j_uri, auth=(settings.neo4j_user, settings.neo4j_password),
+                                       notifications_disabled_categories=["UNRECOGNIZED"])
     try:
         async with driver.session() as session:
             for label in LABELS:
