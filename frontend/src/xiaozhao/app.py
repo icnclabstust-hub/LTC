@@ -23,11 +23,14 @@ from pydantic import BaseModel, Field
 
 from . import emergency, services
 from .auth import IdTokenVerifier, Principal, Unauthorized, require, resolve_principal
+from .asr_correction import TextFixer
 from .backend import BackgroundRunner, build_backend
 from .config import (
     CLEANUP_INTERVAL_SECONDS,
+    CONFIRM_MIN_CONF,
     EXPORT_MAX_LIMIT,
     INTENT_LABELS,
+    PREFETCH_INTENTS,
     ROLES_SPEAKER,
     Settings,
     load_settings,
@@ -64,6 +67,9 @@ class State:
         self.reports: dict[str, ReportRecorder] = {}
         self.known_names: dict[str, str] = {}
         self.lock = threading.Lock()
+        # 照護用詞換字與前後文衝突提醒（2026-10-17 asr-term-correction）；兩者都關閉時不載入
+        self.text_fixer = (TextFixer.load(settings.asr_correction, settings.review_flags, settings.phonetic_match)
+                           if settings.asr_correction or settings.review_flags or settings.phonetic_match else None)
 
     def load_engines(self) -> None:
         from .engines import SherpaEngines
@@ -206,6 +212,17 @@ class MoveIn(BaseModel):
 
 class ConfirmIn(BaseModel):
     names_checked: bool = False
+
+
+class UnconfirmedItemIn(BaseModel):
+    source: str
+    id: int
+    index: int = 0
+
+
+class UnconfirmedConfirmIn(BaseModel):
+    items: list[UnconfirmedItemIn]
+    send: bool
 
 
 class RecordEditIn(BaseModel):
@@ -359,9 +376,11 @@ def _register_routes(app: FastAPI) -> None:
         _own_resident(st, p, resident_id)
         question = body.question.strip()
         match = emergency.detect(question)
+        intent, conf = st.engines.classify(question) if st.engines and match is None else (None, None)
         cur = st.db.execute(
-            "INSERT INTO text_questions (resident_id, caregiver_line_user_id, question, status, created_at)"
-            " VALUES (?, ?, ?, ?, ?)", (resident_id, p.user_id, question, "emergency" if match else "pending", now()),
+            "INSERT INTO text_questions (resident_id, caregiver_line_user_id, question, status, intent, intent_conf,"
+            " created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (resident_id, p.user_id, question, "emergency" if match else "pending", intent, conf, now()),
         )
         qid = cur.lastrowid
         if match is not None:
@@ -371,7 +390,13 @@ def _register_routes(app: FastAPI) -> None:
             st.db.execute("UPDATE text_questions SET answer = ? WHERE id = ?",
                           (emergency.reply_text(match, st.settings.agency_phone, notified), qid))
             return st.db.one("SELECT * FROM text_questions WHERE id = ?", (qid,))
-        intent, conf = st.engines.classify(question) if st.engines else (None, None)
+        if st.settings.confirm_low_confidence and not (
+                intent in PREFETCH_INTENTS and conf is not None and conf >= st.settings.prefetch_threshold):
+            # 打字提問也照錄音的規則：三類、0.5～0.9 等照護員確認；其他不送出（confirm-send-and-keyword 第 4.2 節）
+            low = intent in PREFETCH_INTENTS and conf is not None and conf >= CONFIRM_MIN_CONF
+            st.db.execute("UPDATE text_questions SET status = ? WHERE id = ?",
+                          ("needs_confirm" if low else "not_sent", qid))
+            return st.db.one("SELECT * FROM text_questions WHERE id = ?", (qid,))
 
         def finish(result) -> None:
             st.db.execute("UPDATE text_questions SET answer = ?, status = ?, reply_ms = ? WHERE id = ?",
@@ -389,6 +414,39 @@ def _register_routes(app: FastAPI) -> None:
         except FutureTimeout:
             future.add_done_callback(lambda f: f.exception() is None and finish(f.result()))
         return st.db.one("SELECT * FROM text_questions WHERE id = ?", (qid,))
+
+    @app.get("/api/my/text-questions")
+    def my_text_questions(st: State = Depends(get_state), p: Principal = Depends(get_principal)):
+        """我的案件：所有手動打字提問（各住民）。"""
+        require(p, "caregiver")
+        return st.db.all(
+            "SELECT q.*, r.alias AS resident_alias FROM text_questions q JOIN residents r ON r.id = q.resident_id"
+            " WHERE q.caregiver_line_user_id = ? ORDER BY q.created_at DESC", (p.user_id,))
+
+    @app.get("/api/my/unconfirmed")
+    def my_unconfirmed(st: State = Depends(get_state), p: Principal = Depends(get_principal)):
+        """照護員還沒確認是否送出的問題（我的案件的提醒）。"""
+        require(p, "caregiver")
+        return services.list_unconfirmed(st.db, p.user_id)
+
+    @app.post("/api/unconfirmed/confirm")
+    def confirm_unconfirmed(body: UnconfirmedConfirmIn, st: State = Depends(get_state),
+                            p: Principal = Depends(get_principal)):
+        """照護員勾選後送出（send=true），或標為不用（send=false）。送出在背景執行，回答到了再寫入。"""
+        require(p, "caregiver")
+        for item in body.items:
+            payload = services.unconfirmed_payload(st.db, p.user_id, item.source, item.id, item.index)
+            if not body.send:
+                services.set_unconfirmed_result(st.db, p.user_id, item.source, item.id, item.index, "dismissed")
+                continue
+            services.set_unconfirmed_result(st.db, p.user_id, item.source, item.id, item.index, "pending")
+
+            def finish(f, item=item):
+                if f.exception() is None:
+                    services.set_unconfirmed_result(st.db, p.user_id, item.source, item.id, item.index, "", f.result())
+
+            st.runner.submit(st.backend.query, payload).add_done_callback(finish)
+        return {"ok": True, "count": len(body.items)}
 
     @app.get("/api/residents/{resident_id}/text-questions")
     def list_text_questions(resident_id: int, st: State = Depends(get_state), p: Principal = Depends(get_principal)):
@@ -427,7 +485,9 @@ def _register_routes(app: FastAPI) -> None:
                                          st.settings.prefetch_threshold, st.settings.endpoint_mode,
                                          st.settings.keyword_split,
                                          st.settings.turn_audio_dir if st.settings.keep_turn_audio else None,
-                                         st.settings.auto_gain, st.settings.question_window, st.runner)
+                                         st.settings.auto_gain, st.settings.question_window, st.runner,
+                                         st.settings.confirm_low_confidence, st.text_fixer,
+                                         st.settings.vad_preroll_seconds)
             st.sessions[session_id] = processor
         return {"session_id": session_id, "voiceprint_agreed": processor.voiceprint_agreed}
 
@@ -561,9 +621,16 @@ def _register_routes(app: FastAPI) -> None:
         transcript = await asyncio.to_thread(recorder.finish)
         if not transcript:
             return {"saved": False, "detail": "沒有辨識到語音"}
+        asr_text = None
+        if st.text_fixer is not None:
+            # 今日狀況回報也換照護用詞（asr-term-correction 第 5.3 節）
+            fixed, used, _ = st.text_fixer.correct(transcript)
+            if used:
+                asr_text, transcript = transcript, fixed
         cur = st.db.execute(
-            "INSERT INTO daily_reports (caregiver_line_user_id, report_date, transcript, created_at) VALUES (?, ?, ?, ?)",
-            (p.user_id, date.today().isoformat(), transcript, now()),
+            "INSERT INTO daily_reports (caregiver_line_user_id, report_date, transcript, asr_text, created_at)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (p.user_id, date.today().isoformat(), transcript, asr_text, now()),
         )
         return {"saved": True, "id": cur.lastrowid, "transcript": transcript}
 

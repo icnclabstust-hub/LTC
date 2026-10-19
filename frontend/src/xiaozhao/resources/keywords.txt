@@ -1,2 +1,2 @@
 x iǎo zh ào n ǐ h ǎo :2.0 #0.2 @小照你好
-x iǎo zh ào q ǐng h uí d á :2.0 #0.2 @小照請回答
+x iǎo zh ào h uí d á :2.0 #0.2 @小照回答

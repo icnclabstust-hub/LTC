@@ -106,7 +106,7 @@ def test_finished_sentence_is_sent_after_half_second_plus_onset_margin(db):
 
 
 def test_answer_keyword_flushes_and_ends_turn(db):
-    engines = CountingEngines(texts={0: WAKE, 1: UNFINISHED, 2: "小照請回答"}, kws_schedule=[(1.0, WAKE)])
+    engines = CountingEngines(texts={0: WAKE, 1: UNFINISHED, 2: "小照回答"}, kws_schedule=[(1.0, WAKE)])
     Feeder(make_session(db, engines))(
         WAKE_PART + [("speech", 1.5, 1), ("silence", 0.3), ("speech", 1.0, 2), ("silence", 1)])
     assert texts(db) == [UNFINISHED]

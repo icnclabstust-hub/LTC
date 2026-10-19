@@ -213,6 +213,78 @@ def active_supervisor_line_ids(db: Database) -> list[str]:
 _SOURCE_TABLES = {"turn": "turns", "line_case": "line_cases", "text_question": "text_questions"}
 
 
+# ---------- 待照護員確認的問題（2026-10-15 confirm-send-and-keyword 第 4.2 節） ----------
+
+def list_unconfirmed(db: Database, user_id: str) -> list[dict]:
+    """照護員還沒確認是否送出的問題（錄音的一輪、打字提問）。"""
+    items = []
+    turns = db.all(
+        "SELECT t.id, t.intents, t.ended_at, r.alias FROM turns t JOIN sessions s ON s.id = t.session_id"
+        " JOIN residents r ON r.id = s.resident_id WHERE s.caregiver_line_user_id = ? AND t.intents LIKE ?"
+        " ORDER BY t.ended_at DESC", (user_id, "%needs_confirm%"))
+    for t in turns:
+        for i, r in enumerate(json.loads(t["intents"])):
+            if r["status"] == "needs_confirm":
+                items.append({"source": "turn", "id": t["id"], "index": i, "question": r["question"],
+                              "intent": r["intent"], "confidence": r["confidence"], "created_at": t["ended_at"],
+                              "resident_alias": t["alias"]})
+    for q in db.all(
+            "SELECT q.*, r.alias FROM text_questions q JOIN residents r ON r.id = q.resident_id"
+            " WHERE q.caregiver_line_user_id = ? AND q.status = 'needs_confirm' ORDER BY q.created_at DESC", (user_id,)):
+        items.append({"source": "text_question", "id": q["id"], "index": 0, "question": q["question"],
+                      "intent": q["intent"], "confidence": q["intent_conf"], "created_at": q["created_at"],
+                      "resident_alias": q["alias"]})
+    items.sort(key=lambda x: x["created_at"] or 0, reverse=True)
+    return items
+
+
+def unconfirmed_payload(db: Database, user_id: str, source: str, item_id: int, index: int) -> dict:
+    """取出待確認問題要送後端的內容（並檢查是否屬於這位照護員、仍待確認）。"""
+    if source == "turn":
+        row = db.one("SELECT t.intents FROM turns t JOIN sessions s ON s.id = t.session_id"
+                     " WHERE t.id = ? AND s.caregiver_line_user_id = ?", (item_id, user_id))
+        results = json.loads(row["intents"]) if row and row["intents"] else []
+        if index >= len(results) or results[index]["status"] != "needs_confirm":
+            raise NotFound("找不到待確認的問題")
+        return results[index]["payload"]
+    if source == "text_question":
+        row = db.one("SELECT * FROM text_questions WHERE id = ? AND caregiver_line_user_id = ? AND status = 'needs_confirm'",
+                     (item_id, user_id))
+        if row is None:
+            raise NotFound("找不到待確認的問題")
+        return {"text_question_id": row["id"], **caller_fields(db, user_id), "text": row["question"],
+                "intent": row["intent"], "intent_conf": row["intent_conf"], "keywords": [], "provisional": False}
+    raise NotFound("來源不正確")
+
+
+def set_unconfirmed_result(db: Database, user_id: str, source: str, item_id: int, index: int,
+                           status: str, result=None) -> None:
+    """確認後更新：status 為 pending（送出中）、dismissed（不用），或依後端結果（result）。"""
+    if result is not None:
+        status = result.status
+    if source == "turn":
+        with db.transaction() as conn:
+            row = conn.execute("SELECT intents FROM turns WHERE id = ?", (item_id,)).fetchone()
+            results = json.loads(row["intents"])
+            item = results[index]
+            item["status"] = status
+            if result is not None:
+                item.update({"request_id": result.request_id, "answer": result.answer, "reason": result.reason,
+                             "elapsed_ms": result.elapsed_ms})
+            answer, turn_status = combine_intent_answers(results)
+            conn.execute("UPDATE turns SET answer = ?, answer_status = ?, intents = ? WHERE id = ?",
+                         (answer, turn_status, json.dumps(results, ensure_ascii=False), item_id))
+        if status == "awaiting_human":
+            create_supervisor_request(db, user_id, "turn", item_id, item["question"], result.reason,
+                                      result.request_id, item["intent"])
+        return
+    db.execute("UPDATE text_questions SET status = ?, answer = ?, reply_ms = ? WHERE id = ?",
+               (status, result.answer if result else None, result.elapsed_ms if result else None, item_id))
+    if status == "awaiting_human":
+        question = db.one("SELECT question FROM text_questions WHERE id = ?", (item_id,))["question"]
+        create_supervisor_request(db, user_id, "text_question", item_id, question, result.reason, result.request_id)
+
+
 def combine_intent_answers(results: list[dict]) -> tuple[str | None, str]:
     """一輪多個意圖的回答合併成顯示文字與整體狀態（multi-intent-turn 第 4.2 節）。"""
     if not results:
@@ -221,12 +293,24 @@ def combine_intent_answers(results: list[dict]) -> tuple[str | None, str]:
     for r in results:
         if r["status"] == "awaiting_human":
             text = "已轉督導，等待回覆"
+        elif r["status"] == "needs_confirm":
+            text = "小照不太確定，等你確認是否送出"
+        elif r["status"] == "pending":
+            text = "查詢中…"
+        elif r["status"] == "dismissed":
+            text = "未送出（照護員選擇不用）"
         else:
             text = r.get("answer") or "（沒有回答）"
         lines.append(f"【{r['intent']}】{text}")
-    statuses = {r["status"] for r in results}
-    if "awaiting_human" in statuses:
+    statuses = {r["status"] for r in results} - {"dismissed"}
+    if not statuses:
+        status = "no_question"
+    elif "awaiting_human" in statuses:
         status = "awaiting_human"
+    elif "needs_confirm" in statuses:
+        status = "needs_confirm"
+    elif "pending" in statuses:
+        status = "pending"
     elif "human_answered" in statuses:
         status = "human_answered"
     else:
@@ -290,7 +374,8 @@ def create_record(
         "sentences": [
             {"start_ms": u["start_ms"], "end_ms": u["end_ms"], "speaker": u.get("speaker_label"),
              "role": u["speaker_role"], "role_manual": False, "text": u["text"], "intent": u["intent"],
-             "intent_owner": u.get("intent_owner"), "source_idx": [u["idx"]]}
+             "intent_owner": u.get("intent_owner"), "source_idx": [u["idx"]],
+             "asr_text": u.get("asr_text"), "review_flag": u.get("review_flag"), "term_hint": u.get("term_hint")}
             for u in utterances
         ],
     }
@@ -464,9 +549,11 @@ def validate_doc(doc: dict) -> dict:
         source = s.get("source_idx") or []
         if not isinstance(source, list) or not all(isinstance(x, int) for x in source):
             raise ServiceError("source_idx 格式錯誤")
+        # 換字前的原文與衝突提醒由系統產生，原樣保留（2026-10-17 asr-term-correction）
+        extra = {k: str(s[k])[:500] for k in ("asr_text", "review_flag", "term_hint") if s.get(k)}
         sentences.append({"start_ms": start, "end_ms": end, "speaker": speaker, "role": role,
                           "role_manual": bool(s.get("role_manual")), "text": text, "intent": intent,
-                          "intent_owner": owner, "source_idx": source})
+                          "intent_owner": owner, "source_idx": source, **extra})
     return {"speakers": speakers, "sentences": sentences}
 
 

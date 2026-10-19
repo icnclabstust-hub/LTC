@@ -74,6 +74,9 @@ CREATE TABLE IF NOT EXISTS utterances (
     is_question    INTEGER NOT NULL DEFAULT 0,  -- 問句（2026-10-14 question-window）
     window_id      INTEGER,                     -- 一輪內的問句 window 編號；未啟用時為 NULL
     intent_owner   TEXT,                        -- 意圖歸屬（N0 輸出，僅供參考；2026-10-14 n0-intent-model）
+    asr_text       TEXT,                        -- 換字前的語音辨識原文；沒有換字為 NULL（2026-10-17）
+    review_flag    TEXT,                        -- 前後文衝突的原因；沒有為 NULL（2026-10-17）
+    term_hint      TEXT,                        -- 讀音比對「可能是」的用詞，以「、」分隔（2026-10-17）
     PRIMARY KEY (turn_id, idx)
 );
 CREATE TABLE IF NOT EXISTS text_questions (
@@ -84,6 +87,8 @@ CREATE TABLE IF NOT EXISTS text_questions (
     answer      TEXT,
     status      TEXT NOT NULL,
     reply_ms    REAL,  -- 送出到收到後端回覆的毫秒數（2026-10-14 async-backend）
+    intent      TEXT,  -- 打字提問的意圖與信心（2026-10-15 confirm-send-and-keyword）
+    intent_conf REAL,
     created_at  REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS line_cases (
@@ -117,6 +122,7 @@ CREATE TABLE IF NOT EXISTS daily_reports (
     caregiver_line_user_id TEXT NOT NULL,
     report_date            TEXT NOT NULL,
     transcript             TEXT NOT NULL,
+    asr_text               TEXT,  -- 換字前的語音辨識原文；沒有換字為 NULL（2026-10-17）
     created_at             REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS latency_logs (
@@ -182,7 +188,13 @@ class Database:
             self._add_column("utterances", "is_question", "INTEGER NOT NULL DEFAULT 0")
             self._add_column("utterances", "window_id", "INTEGER")
             self._add_column("utterances", "intent_owner", "TEXT")
+            self._add_column("utterances", "asr_text", "TEXT")
+            self._add_column("utterances", "review_flag", "TEXT")
+            self._add_column("utterances", "term_hint", "TEXT")
+            self._add_column("daily_reports", "asr_text", "TEXT")
             self._add_column("text_questions", "reply_ms", "REAL")
+            self._add_column("text_questions", "intent", "TEXT")
+            self._add_column("text_questions", "intent_conf", "REAL")
             self._add_column("line_cases", "reply_ms", "REAL")
             # 串接後端（2026-10-19 fe-be-integration）：帳號以後端為準，本機只快取；緊急請求優先排序
             self._add_column("accounts", "be_user_id", "TEXT")

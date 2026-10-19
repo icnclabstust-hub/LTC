@@ -36,7 +36,7 @@ from linebot.v3.webhooks import FollowEvent, MessageEvent, PostbackEvent, TextMe
 
 from . import emergency, services
 from .backend import Backend, BackgroundRunner
-from .config import Settings
+from .config import HUMAN_ONLY_PATTERN, Settings
 from .db import Database, now
 from .wake_word import strip_wake_word
 
@@ -65,7 +65,7 @@ HELP_TEXT = (
     "・回答範圍：只回答規範查詢並附上原文出處；醫療、用藥，以及知識庫沒有依據的問題，會轉給督導回覆。\n"
     "・找督導：輸入「直接問督導：你的問題」不經小照直接轉督導；輸入「轉交給督導」把上一個問題轉給督導。\n"
     "・緊急狀況（沒有呼吸、噎到、跌倒、走失…）：小照會立即回覆急救指引並通知督導，請同時撥打 119。\n"
-    "・錄音模式：說「小照你好」開始一輪，說「小照請回答」、安靜 3 秒或說下一個「小照你好」結束。會在外部瀏覽器開啟，錄音中請保持螢幕亮著。\n"
+    "・錄音模式：說「小照你好」開始一輪，說「小照回答」、安靜 3 秒或說下一個「小照你好」結束。會在外部瀏覽器開啟，錄音中請保持螢幕亮著。\n"
     "・今日狀況回報：口述當天狀況，說完安靜 3 秒自動送出給督導。\n"
     "・住民、家屬請一律用代稱，不要輸入姓名、房號。"
 )
@@ -245,6 +245,18 @@ class LineService:
         if case_id is None:
             return
         intent, conf = self._classify(question) if self._classify else (None, None)
+        if self._settings.line_regulation_only:
+            # LINE 聊天室使用規則（2026-10-15 提案學生）：醫療、用藥、補助金額轉督導；只回答規範詢問；其餘不回答
+            if HUMAN_ONLY_PATTERN.search(question):
+                services.create_supervisor_request(self._db, user_id, "line_case", case_id, question,
+                                                   "醫療、用藥或補助金額，依規定轉督導", None)
+                self._db.execute("UPDATE line_cases SET status = 'awaiting_human' WHERE id = ?", (case_id,))
+                if not self.reply(event.reply_token, user_id, "這個問題已轉給督導，督導回覆後會通知你。"):
+                    self._db.execute("UPDATE line_cases SET notify_failed = 1 WHERE id = ?", (case_id,))
+                return
+            if intent != "規範詢問":
+                self._db.execute("UPDATE line_cases SET status = 'not_answered' WHERE id = ?", (case_id,))
+                return
         future = self._query_runner.submit(self._backend.query, {
             "line_case_id": case_id, **services.caller_fields(self._db, user_id),
             "text": question, "intent": intent, "intent_conf": conf,

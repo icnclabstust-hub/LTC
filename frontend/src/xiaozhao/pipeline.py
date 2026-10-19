@@ -36,6 +36,7 @@ from .config import (
     ANSWER_KEYWORD,
     PREFETCH_INTENTS,
     SAMPLE_RATE,
+    SHORT_SPEAKER_SECONDS,
     SPEAKER_GROUP_THRESHOLD,
     TURN_SILENCE_SECONDS,
     VAD_MIN_SILENCE_SECONDS,
@@ -74,20 +75,27 @@ AUDIO_RING_SECONDS = 120
 MAX_TURN_AUDIO_SECONDS = 15 * 60
 # 輪外片段依 KWS 回報位置切開時往前推的長度：「小照你好」約 1 秒＋KWS 回報延遲約 0.5 秒
 WAKE_LOOKBACK_SAMPLES = int(1.5 * SAMPLE_RATE)
+PREROLL_HISTORY_SAMPLES = 30 * SAMPLE_RATE
 
 # 轉文字結果中的喚醒詞與結束詞（ASR 可能把「照」轉成同音字）
 # 「道」：2026-10-13 tk03 只轉片段開頭 2 秒時，「小趙你好」被轉成「小道你好」
 _ZHAO = r"[小曉筱][照趙找兆罩召朝道]"
 WAKE_PATTERN = re.compile(_ZHAO + r"[，,、\s]*你好[，,。！!\s]*")
-ANSWER_PATTERN = re.compile(_ZHAO + r"[，,、\s]*[請清]回答[，,。！!\s]*")
-# KWS 已聽到關鍵詞、但 ASR 把「小照」轉錯（例如「小套請回答」「趙你好」）時，只在片段開頭／結尾寬鬆刪除
+ANSWER_PATTERN = re.compile(_ZHAO + r"[，,、\s]*回答[，,。！!\s]*")
+# 舊結束詞「小照請回答」（2026-10-15 起不再結束一輪）：KWS 誤報時，文字中看到它就不當成結束詞
+OLD_ANSWER_PATTERN = re.compile(_ZHAO + r"[，,、\s]*[請清][，,、\s]*回答")
+# 送後端前去掉的舊結束詞（含後面的標點）；逐字稿保留原話
+OLD_ANSWER_STRIP = re.compile(r"[，,、\s]*" + OLD_ANSWER_PATTERN.pattern + r"[，,。！!？?\s]*")
+# KWS 已聽到關鍵詞、但 ASR 把「小照」轉錯（例如「小套回答」「趙你好」）時，只在片段開頭／結尾寬鬆刪除
 # （2026-10-14 external-mic 第 8 節）
-LOOSE_WAKE_PATTERN = re.compile(r"^[一-鿿]{0,2}[，,、\s]*你好[，,。！!\s]*")
+# 「小照〇好」「小照〇答」：KWS 聽到關鍵詞、ASR 把中間的字轉錯（2026-10-17「小照雷好」「小趙雷答」）
+LOOSE_WAKE_PATTERN = re.compile(r"^(?:[一-鿿]{0,2}[，,、\s]*你好|" + _ZHAO + r"[一-鿿]?好)[，,。！!\s]*")
 # 一輪的第一句只有「〇〇你好」（例如「老趙你好」「照你也好」）：是開輪的喚醒詞本身被轉錯，不列入逐字稿
 # （2026-10-14 external-mic 第 10 節）
-WAKE_ONLY_PATTERN = re.compile(r"[一-鿿]{0,2}[，,、\s]*你也?好[，,。！!\s]*")
+# 「教你哈」：「小照你好」轉錯的版本（2026-10-17 LIFF 實測第二份文稿）
+WAKE_ONLY_PATTERN = re.compile(r"(?:[一-鿿]{0,2}[，,、\s]*你也?[好哈]|" + _ZHAO + r"[一-鿿]?好)[，,。！!\s]*")
 WAKE_ONLY_WINDOW_SAMPLES = int(3.0 * SAMPLE_RATE)
-LOOSE_ANSWER_PATTERN = re.compile(r"[一-鿿]{0,2}[，,、\s]*[請清]回答[，,。！!？?\s]*$")
+LOOSE_ANSWER_PATTERN = re.compile(r"(?:[一-鿿]{0,2}[，,、\s]*回答|" + _ZHAO + r"[，,、\s]*[一-鿿]?答)[，,。！!？?\s]*$")
 
 
 def strip_keywords(text: str) -> tuple[str, bool, bool]:
@@ -167,6 +175,7 @@ class SessionProcessor:
         db: Database, engines: Engines, backend: Backend, prefetch_threshold: float,
         endpoint_mode: str = "fixed", keyword_split: bool = True, audio_dir: Path | None = None,
         auto_gain: bool = False, question_window: bool = False, runner: BackgroundRunner | None = None,
+        confirm_low: bool = False, text_fixer=None, preroll_seconds: float = 0.0,
     ) -> None:
         self.session_id = session_id
         self.resident_id = resident_id
@@ -218,6 +227,14 @@ class SessionProcessor:
         self._gain = AutoGain() if auto_gain else None
         # 後端呼叫：http 模式在背景執行，不卡住音訊處理（2026-10-14 async-backend）；預設立即執行
         self._runner = runner or BackgroundRunner(inline=True)
+        # 三類意圖信心低於預取門檻時不自動送出，等照護員確認（confirm-send-and-keyword 第 4.2 節）
+        self._confirm_low = confirm_low
+        # 照護用詞換字與前後文衝突提醒（asr-term-correction 第 5.3 節）；None 表示不處理
+        self._text_fixer = text_fixer
+        # 前置音訊：最近的音訊保留在記憶體，片段開頭往前補，但不與上一段重疊（2026-10-17）
+        self._preroll = int(preroll_seconds * SAMPLE_RATE)
+        self._history = np.zeros(0, dtype=np.float32)
+        self._last_segment_end = 0
         # 以問句為單位切句（question-window 第 4.3 節）；服務由 QUESTION_WINDOW 開啟，單元測試預設關閉。
         # pause_veto／adaptive 另有合併邏輯，不套用
         self._question_window = question_window and not self._pause_veto and not self._adaptive
@@ -244,6 +261,7 @@ class SessionProcessor:
             if self._stopped:
                 return
             for start, samples in self._vad.flush():
+                start, samples = self._with_preroll(start, samples)
                 self._on_segment(start, samples, upload_ms=None, kws_ms=0.0, vad_ms=0.0)
             if self._turn:
                 self._end_turn("session_stop")
@@ -272,14 +290,29 @@ class SessionProcessor:
         if self._gain is not None and self._gain.observe(raw, self._vad.is_speech()):
             logger.info("session %s：自動放大調整為 +%.0f dB", self.session_id, self._gain.gain_db)
         self._fed += len(samples)
+        if self._preroll:
+            # 片段要等說完才送出，開頭可能在好幾秒前：保留 30 秒（VAD 單段上限約 20 秒）
+            self._history = np.concatenate([self._history, samples])[-PREROLL_HISTORY_SAMPLES:]
 
         for start, seg in segments:
             self._last_speech_end = start + len(seg)
+            start, seg = self._with_preroll(start, seg)
             self._on_segment(start, seg, upload_ms, kws_ms=(t1 - t0) * 1000, vad_ms=(t2 - t1) * 1000)
         self._keywords = [(pos, k) for pos, k in self._keywords if pos > self._covered_until.get(k, -1)]
         self._force_answer_end()
         self._handle_orphan_keywords()
         self._check_silence()
+
+    def _with_preroll(self, start: int, samples: np.ndarray) -> tuple[int, np.ndarray]:
+        """片段開頭往前補前置音訊；不早於上一段結尾，也不早於記憶體中保留的音訊。"""
+        if self._preroll:
+            history_start = self._fed - len(self._history)
+            new_start = max(start - self._preroll, self._last_segment_end, history_start)
+            if new_start < start:
+                samples = np.concatenate([self._history[new_start - history_start:start - history_start], samples])
+                start = new_start
+            self._last_segment_end = start + len(samples)
+        return start, samples
 
     def _keep_audio(self, samples: np.ndarray) -> None:
         """音訊只在記憶體保留最近 AUDIO_RING_SECONDS；輪進行中時同時累積到本輪的音訊。"""
@@ -313,8 +346,26 @@ class SessionProcessor:
                     self._end_turn("next_wake_word")
                 self._start_turn(pos)
             elif keyword == ANSWER_KEYWORD and self._turn:
+                self._strip_trailing_answer()
                 self._end_turn("answer_keyword")
         self._keywords = remaining
+
+    def _strip_trailing_answer(self) -> None:
+        """KWS 較晚回報結束詞時，那句話已處理完、句尾留著轉錯的結束詞（「小壯回答」）：結束本輪前刪掉。"""
+        pending = self._text_pending
+        if pending is not None:
+            text = LOOSE_ANSWER_PATTERN.sub("", pending.texts[-1]).rstrip(" ，,")
+            if text != pending.texts[-1]:
+                pending.texts[-1] = text
+                pending.texts = [t for t in pending.texts if t] or [""]
+            return
+        if self._turn and self._turn.utterances:
+            u = self._turn.utterances[-1]
+            text = LOOSE_ANSWER_PATTERN.sub("", u["text"]).rstrip(" ，,")
+            if text and text != u["text"]:
+                u["text"] = text
+                self._db.execute("UPDATE utterances SET text = ? WHERE turn_id = ? AND idx = ?",
+                                 (text, self._turn.id, u["idx"]))
 
     def _force_answer_end(self) -> None:
         """聽到結束詞後 VAD 一直判定在說話（電風扇等噪音）時，強制斷句，讓結束詞生效。"""
@@ -404,6 +455,11 @@ class SessionProcessor:
         t0 = time.perf_counter()
         raw_text = self._engines.transcribe(samples)
         asr_ms = (time.perf_counter() - t0) * 1000
+        if kws_answer and OLD_ANSWER_PATTERN.search(raw_text):
+            # 說的是舊結束詞「小照請回答」：不結束這一輪，KWS 延遲回報的同一個結束詞也忽略
+            kws_answer = False
+            self._covered_until[ANSWER_KEYWORD] = end + KEYWORD_ORPHAN_SAMPLES
+            logger.info("session %s：偵測到舊結束詞「小照請回答」，不結束本輪", self.session_id)
         parts = split_keywords(raw_text)
 
         if all(kind == "text" for kind, *_ in parts):
@@ -546,7 +602,7 @@ class SessionProcessor:
 
     def _flush_text_pending(self) -> None:
         pending, self._text_pending = self._text_pending, None
-        if pending is None or self._turn is None:
+        if pending is None or self._turn is None or not pending.text:
             return
         samples = pending.parts[0] if len(pending.parts) == 1 else np.concatenate(pending.parts)
         self._add_utterance(pending.start, pending.end, pending.text, samples,
@@ -679,11 +735,21 @@ class SessionProcessor:
                        is_question: bool = False) -> None:
         turn = self._turn
         idx = len(turn.utterances)
+        # 換字放在去掉關鍵詞之後、意圖判斷之前：意圖模型、後端、逐字稿都用修正後的文字
+        asr_text = term_hint = None
+        if self._text_fixer is not None:
+            fixed, used, hints = self._text_fixer.correct(text)
+            if used:
+                asr_text, text = text, fixed
+                logger.info("session %s：照護用詞換字（規則 %s）", self.session_id, ",".join(used))
+            term_hint = "、".join(hints) or None
 
         t0 = time.perf_counter()
         role, label, source = "未辨識", None, None
         if self._speakers is not None:
-            label = self._speakers.assign(self._engines.embed(samples))
+            # 短句聲紋不準：不開新代號，歸給最接近的人（2026-10-17 三人實測，提案學生決定）
+            label = self._speakers.assign(self._engines.embed(samples),
+                                          allow_new=len(samples) >= SHORT_SPEAKER_SECONDS * SAMPLE_RATE)
             role, source = self._speaker_roles.get(label, "未辨識"), "voiceprint"
         speaker_ms = (time.perf_counter() - t0) * 1000 if self._speakers is not None else None
 
@@ -694,21 +760,25 @@ class SessionProcessor:
         else:
             (intent, conf), owner = self._engines.classify(text), None
         intent_ms = (time.perf_counter() - t0) * 1000
+        review_flag = None
+        if self._text_fixer is not None:
+            # 只提醒、不改字；同一輪前面的陳述句（問句不算，例如「會痛嗎？」「不痛」）
+            review_flag = self._text_fixer.flag(text, [u["text"] for u in turn.utterances if not u["is_question"]])
 
         utterance = {
             "idx": idx, "start_ms": int(start * 1000 / SAMPLE_RATE), "end_ms": int(end * 1000 / SAMPLE_RATE),
             "text": text, "speaker_role": role, "speaker_label": label, "speaker_source": source,
             "intent": intent, "intent_conf": conf,
             "is_question": is_question, "window_id": turn.window if self._question_window else None,
-            "intent_owner": owner,
+            "intent_owner": owner, "asr_text": asr_text, "review_flag": review_flag, "term_hint": term_hint,
         }
         turn.utterances.append(utterance)
         self._db.execute(
             "INSERT INTO utterances (turn_id, idx, start_ms, end_ms, text, speaker_role, speaker_label,"
-            " speaker_source, intent, intent_conf, is_question, window_id, intent_owner)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " speaker_source, intent, intent_conf, is_question, window_id, intent_owner, asr_text, review_flag,"
+            " term_hint) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (turn.id, idx, utterance["start_ms"], utterance["end_ms"], text, role, label, source, intent, conf,
-             int(is_question), utterance["window_id"], owner),
+             int(is_question), utterance["window_id"], owner, asr_text, review_flag, term_hint),
         )
 
         build_ms = backend_ms = None
@@ -742,8 +812,12 @@ class SessionProcessor:
              timing["asr_ms"], speaker_ms, intent_ms, build_ms, backend_ms, now()),
         )
 
+    def _needs_confirm(self, conf: float | None) -> bool:
+        """三類意圖、信心介於 0.5 與預取門檻之間：等照護員確認（< 0.5 已在前面排除）。"""
+        return self._confirm_low and conf is not None and conf < self._prefetch_threshold
+
     def _query_result(self, payload: dict) -> dict:
-        res = self._backend.query(payload)
+        res = self._backend.query(_backend_payload(payload))
         return {"request_id": res.request_id, "status": res.status, "answer": res.answer, "reason": res.reason,
                 "elapsed_ms": res.elapsed_ms}
 
@@ -768,7 +842,12 @@ class SessionProcessor:
                 continue
             prefetched = turn.prefetched_questions.get(u["idx"])
             payload = self._question_payload(turn, u, provisional=False)
-            answer = _resolve(prefetched) if prefetched is not None else self._query_result(payload)
+            if prefetched is not None:
+                answer = _resolve(prefetched)
+            elif self._needs_confirm(u["intent_conf"]):
+                answer = _awaiting_confirmation(payload)
+            else:
+                answer = self._query_result(payload)
             results.append({"intent": u["intent"], "utterance_ids": payload["context_utterance_ids"] + [u["idx"]],
                             "confidence": u["intent_conf"], "question": u["text"], **answer})
         statements = [u for u in turn.utterances if not u["is_question"]]
@@ -781,16 +860,19 @@ class SessionProcessor:
         for item in intents:
             if item["intent"] not in PREFETCH_INTENTS:
                 continue
+            payload = {
+                "turn_id": turn.id, "utterance_ids": item["utterance_ids"],
+                **self.caller, "text": item["text"], "intent": item["intent"],
+                "intent_conf": item["confidence"], "speaker_codes": item["speaker_codes"],
+                "keywords": [], "provisional": False,
+            }
             if item["intent"] in turn.prefetched:
                 # 預取命中：沿用（cache-strategy 第 4 節）；背景執行時等它完成
                 answer = _resolve(turn.prefetched[item["intent"]])
+            elif self._needs_confirm(item["confidence"]):
+                answer = _awaiting_confirmation(payload)
             else:
-                answer = self._query_result({
-                    "turn_id": turn.id, "utterance_ids": item["utterance_ids"],
-                    **self.caller, "text": item["text"], "intent": item["intent"],
-                    "intent_conf": item["confidence"], "speaker_codes": item["speaker_codes"],
-                    "keywords": [], "provisional": False,
-                })
+                answer = self._query_result(payload)
             results.append({"intent": item["intent"], "utterance_ids": item["utterance_ids"],
                             "confidence": item["confidence"], "question": item["text"], **answer})
         return results
@@ -803,6 +885,18 @@ class SessionProcessor:
                 for u in self._turn.utterances:
                     if u["speaker_label"] == code:
                         u["speaker_role"] = role
+
+
+def _awaiting_confirmation(payload: dict) -> dict:
+    """先不送出；照護員確認後再以 payload 送後端。"""
+    return {"request_id": None, "status": "needs_confirm", "answer": None, "reason": None, "elapsed_ms": None,
+            "payload": _backend_payload(payload)}
+
+
+def _backend_payload(payload: dict) -> dict:
+    """送後端的文字去掉「小照請回答」：它不結束一輪，但對問題來說是雜訊（2026-10-15 kw3 實測）。"""
+    text = OLD_ANSWER_STRIP.sub("，", payload["text"]).strip("，")
+    return {**payload, "text": text} if text != payload["text"] else payload
 
 
 def _resolve(future) -> dict:

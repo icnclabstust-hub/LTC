@@ -67,9 +67,9 @@ def turns(db, parts, engines):
 
 
 def test_misrecognized_answer_keyword_at_end_is_removed(db):
-    # 手機實測：KWS 聽到「小照請回答」，ASR 轉成「小套請回答」
-    engines = FakeEngines(texts={0: WAKE, 1: "早上只吃了半碗粥小套請回答"},
-                          kws_schedule=[(1.0, WAKE), (4.4, "小照請回答")])
+    # 手機實測：KWS 聽到「小照回答」，ASR 轉成「小套回答」
+    engines = FakeEngines(texts={0: WAKE, 1: "早上只吃了半碗粥小套回答"},
+                          kws_schedule=[(1.0, WAKE), (4.4, "小照回答")])
     parts = [("silence", 0.2), ("speech", 0.8, 0), ("silence", 0.6), ("speech", 3, 1), ("silence", 4)]
     assert turns(db, parts, engines) == [("answer_keyword", ["早上只吃了半碗粥"])]
 
@@ -95,9 +95,9 @@ def test_wake_far_from_any_speech_is_ignored(db):
 
 
 def test_answer_keyword_ends_turn_while_noise_keeps_vad_in_speech(db):
-    # 說完「小照請回答」後噪音不斷（VAD 一直判定在說話）：最多等 1.5 秒就強制斷句並結束本輪（第 9 節 B）
-    engines = FakeEngines(texts={0: WAKE, 1: "早上只吃了半碗粥小照請回答"},
-                          kws_schedule=[(1.0, WAKE), (4.5, "小照請回答")])
+    # 說完「小照回答」後噪音不斷（VAD 一直判定在說話）：最多等 1.5 秒就強制斷句並結束本輪（第 9 節 B）
+    engines = FakeEngines(texts={0: WAKE, 1: "早上只吃了半碗粥小照回答"},
+                          kws_schedule=[(1.0, WAKE), (4.5, "小照回答")])
     processor = make_session(db, engines)
     parts = [("silence", 0.2), ("speech", 0.8, 0), ("silence", 0.6), ("speech", 30, 1)]
     for seq, chunk in enumerate(to_chunks(build_audio(parts))[:16]):  # 只送到第 8 秒，噪音還沒停
@@ -107,7 +107,7 @@ def test_answer_keyword_ends_turn_while_noise_keeps_vad_in_speech(db):
     assert [u["text"] for u in db.all("SELECT text FROM utterances WHERE turn_id = ?", (row["id"],))] == ["早上只吃了半碗粥"]
 
 
-@pytest.mark.parametrize("text", ["老趙你好", "照你好", "照你也好"])
+@pytest.mark.parametrize("text", ["老趙你好", "照你好", "照你也好", "教你哈"])
 def test_wake_only_first_sentence_is_not_kept(db, text):
     # 外接麥克風實測：只說「小照你好」，ASR 轉成「老趙你好」等，被當成這一輪的第一句（第 10 節）
     engines = FakeEngines(texts={0: text, 1: "阿嬤今天血壓比較高"}, kws_schedule=[(1.0, WAKE)])

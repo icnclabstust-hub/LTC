@@ -153,8 +153,8 @@ def test_adaptive_without_consent_never_computes_voiceprint(db):
 
 
 def test_adaptive_answer_keyword_flushes_pending_sentence(db):
-    engines = FakeEngines(texts={0: WAKE, 1: QUESTION, 2: "小照請回答"},
-                          kws_schedule=[(1.4, WAKE), (4.4, "小照請回答")])
+    engines = FakeEngines(texts={0: WAKE, 1: QUESTION, 2: "小照回答"},
+                          kws_schedule=[(1.4, WAKE), (4.4, "小照回答")])
     processor = make_session(db, engines, "adaptive")
     feed(processor, build_audio([
         ("silence", 0.5), ("speech", 0.8, 0), ("silence", 0.6),

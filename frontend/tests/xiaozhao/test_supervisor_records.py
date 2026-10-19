@@ -56,13 +56,13 @@ def test_turn_audio_keeps_only_in_turn_speech(db, tmp_path):
 
 
 def test_speech_after_answer_keyword_not_saved(db, tmp_path):
-    engines = FakeEngines(texts={0: WAKE, 1: "藥要怎麼吃小照請回答然後我們聊別的事情"}, kws_schedule=[(1.0, WAKE)])
+    engines = FakeEngines(texts={0: WAKE, 1: "藥要怎麼吃小照回答然後我們聊別的事情"}, kws_schedule=[(1.0, WAKE)])
     processor = make_session(db, engines, tmp_path)
     feed(processor, [("silence", 0.2), ("speech", 0.8, 0), ("silence", 0.6), ("speech", 4.0, 1), ("silence", 4)])
     turn_id = db.one("SELECT id FROM turns")["id"]
-    # 輪從喚醒詞 0.2 秒開始；第二段 1.6～5.6 秒共 19 字，結束詞從第 5 字開始 → 約 2.65 秒
-    # 存到 2.65 秒（約 2.45 秒長），結束詞之後的話（到 5.6 秒）不存
-    assert wav_seconds(tmp_path / f"{turn_id}.wav") == pytest.approx(1.6 + 4.0 * 5 / 19 - 0.2, abs=0.05)
+    # 輪從喚醒詞 0.2 秒開始；第二段 1.6～5.6 秒共 18 字，結束詞從第 5 字開始 → 約 2.71 秒
+    # 存到 2.71 秒（約 2.51 秒長），結束詞之後的話（到 5.6 秒）不存
+    assert wav_seconds(tmp_path / f"{turn_id}.wav") == pytest.approx(1.6 + 4.0 * 5 / 18 - 0.2, abs=0.05)
 
 
 def test_no_audio_without_dir_or_without_sentences(db, tmp_path):

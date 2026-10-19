@@ -61,9 +61,13 @@ class SpeakerGroups:
         self._centroids: list[np.ndarray] = []
         self._counts: list[int] = []
 
-    def assign(self, embedding: np.ndarray) -> str:
+    def assign(self, embedding: np.ndarray, allow_new: bool = True) -> str:
+        """allow_new=False（短句）：不開新群，也不更新群中心，直接歸給最接近的群。"""
         norm = float(np.linalg.norm(embedding))
         vector = embedding / norm if norm else embedding
+        if not allow_new and self._centroids:
+            scores = [cosine(vector, centroid) for centroid in self._centroids]
+            return f"{int(np.argmax(scores)) + 1:02d}"
         best, best_score = None, self._threshold
         for i, centroid in enumerate(self._centroids):
             score = cosine(vector, centroid)

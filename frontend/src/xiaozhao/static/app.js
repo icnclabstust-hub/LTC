@@ -10,14 +10,14 @@ const ROLE_TABS = {
 };
 const MIC_PAGES = new Set(['record', 'report']);
 const ACTING_ROLE_KEY = 'xiaozhao.actingRole';
-const MIC_KEY = 'xiaozhao.micDeviceId';
 const EXTERNAL_MIC_KEY = 'xiaozhao.externalMic';
 const POLL_MS = 2000;
 // 回覆目標：送出問題到收到回覆 3 秒內（10/05 會議決議，P95；2026-10-14 async-backend）
 const REPLY_TARGET_S = 3;
 const STATUS_TEXT = {
   answered: '已回答', awaiting_human: '已轉督導', human_answered: '督導已回覆', no_question: '本輪沒有需要回答的問題',
-  pending: '處理中',
+  pending: '處理中', needs_confirm: '小照不太確定，等你確認是否送出', not_sent: '未送出（不是要問小照的問題）',
+  dismissed: '未送出（你選擇不用）', not_answered: '小照在 LINE 只回答規範查詢',
 };
 
 const app = { config: null, token: null, me: null, page: null, speakerRoles: [], actingRole: null };
@@ -55,6 +55,67 @@ function notice(text) {
   const el = document.getElementById('notice');
   el.textContent = text || '';
   el.hidden = !text;
+}
+
+// ---------- 低信心問題由照護員確認（2026-10-15 confirm-send-and-keyword 第 4.3 節） ----------
+
+const promptedConfirm = new Set();  // 這次開網頁已跳過確認視窗的問題，不重複跳
+
+function confirmKey(item) {
+  return `${item.source}:${item.id}:${item.index || 0}`;
+}
+
+// 我的案件的 ❗：還有沒確認的問題時顯示
+async function refreshUnconfirmedBadge() {
+  if (currentRole() !== 'caregiver') return [];
+  let items = [];
+  try { items = await api('GET', '/api/my/unconfirmed'); } catch { return []; }
+  const tab = document.querySelector('#tabs button[data-page="cases"]');
+  if (tab) tab.classList.toggle('alert', items.length > 0);
+  return items;
+}
+
+async function sendUnconfirmed(items, send) {
+  if (!items.length) return;
+  await api('POST', '/api/unconfirmed/confirm',
+    { send, items: items.map((i) => ({ source: i.source, id: i.id, index: i.index || 0 })) });
+  await refreshUnconfirmedBadge();
+}
+
+// 勾選視窗：預設不勾；按「送出勾選的問題」才送出，關閉或沒勾的留在「我的案件」
+function askConfirm(items, onDone) {
+  const fresh = items.filter((i) => !promptedConfirm.has(confirmKey(i)));
+  if (!fresh.length) return;
+  for (const i of fresh) promptedConfirm.add(confirmKey(i));
+  const boxes = fresh.map((i) => h('input', { type: 'checkbox' }));
+  const send = h('button', {
+    class: 'primary', type: 'button',
+    onclick: async () => {
+      const chosen = fresh.filter((_, n) => boxes[n].checked);
+      if (!chosen.length) return;
+      send.disabled = true;
+      try {
+        await sendUnconfirmed(chosen, true);
+        document.getElementById('dialog').close();
+        if (onDone) onDone();
+      } catch (err) { send.disabled = false; notice(err.message); }
+    },
+  }, '送出勾選的問題');
+  showDialog(
+    h('h3', {}, '小照不太確定這些是不是要問的問題'),
+    h('p', { class: 'muted' }, '勾選要送出的問題，再按「送出勾選的問題」。沒勾的或按「關閉」，會留在「我的案件」，之後還可以送出。'),
+    ...fresh.map((i, n) => h('label', { class: 'check-item' }, boxes[n],
+      h('div', {}, h('div', {}, i.question), h('div', { class: 'muted' }, `${i.intent} ${(i.confidence * 100).toFixed(0)}%`)))),
+    h('div', { class: 'row', style: 'margin-top:8px' }, send));
+  refreshUnconfirmedBadge();
+}
+
+// 一輪結束後，這一輪等確認的問題
+function turnUnconfirmed(t) {
+  let results = [];
+  try { results = JSON.parse(t.intents || '[]'); } catch { results = []; }
+  return results.map((r, index) => ({ ...r, source: 'turn', id: t.id, index }))
+    .filter((r) => r.status === 'needs_confirm');
 }
 
 function showDialog(...children) {
@@ -176,6 +237,7 @@ function renderTopbar() {
   const tabs = document.getElementById('tabs');
   tabs.replaceChildren(...(ROLE_TABS[currentRole()] || []).map(([page, label]) =>
     h('button', { type: 'button', 'data-page': page, onclick: () => go(page) }, label)));
+  refreshUnconfirmedBadge();
 }
 
 function go(page) {
@@ -382,9 +444,8 @@ const recorder = {
 };
 
 const micPicker = {
-  // 錄音頁的麥克風下拉選單（external-mic 第 4.1 節）；選擇只存在這支手機的瀏覽器
-  onDevicesChanged: null,
-
+  // 「使用外接麥克風」勾選框，只存在這支手機的瀏覽器。下拉選單已移除：Android Chrome 列不出外接麥克風
+  // （2026-10-15 confirm-send-and-keyword 第 1.4 節）
   external() {
     try { return localStorage.getItem(EXTERNAL_MIC_KEY) === '1'; } catch { return false; }
   },
@@ -392,28 +453,7 @@ const micPicker = {
   saveExternal(on) {
     try { localStorage.setItem(EXTERNAL_MIC_KEY, on ? '1' : '0'); } catch { /* 無痕模式等情況忽略 */ }
   },
-
-  savedId() {
-    try { return localStorage.getItem(MIC_KEY) || ''; } catch { return ''; }
-  },
-
-  save(id) {
-    try { localStorage.setItem(MIC_KEY, id); } catch { /* 無痕模式等情況忽略 */ }
-  },
-
-  async list() {
-    if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return [];
-    const devices = await navigator.mediaDevices.enumerateDevices();
-    // default、communications 是系統預設的別名，由「手機預設麥克風」代表
-    return devices.filter((d) => d.kind === 'audioinput' && d.deviceId && !['default', 'communications'].includes(d.deviceId));
-  },
 };
-
-if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
-  navigator.mediaDevices.addEventListener('devicechange', () => {
-    if (micPicker.onDevicesChanged && !recorder.active) micPicker.onDevicesChanged();
-  });
-}
 
 function micError(err) {
   const name = err && err.name;
@@ -456,7 +496,7 @@ async function renderHelp(view) {
     section('錄音模式怎麼用',
       '第一次使用：新增住民（用代稱）、記錄住民的書面同意日期、詢問在場者是否同意即時區分說話人。',
       '每次錄音前，確認在場者都同意錄音，再按「確認錄音」。',
-      '說「小照你好」開始一輪；說「小照請回答」、安靜 3 秒，或說下一個「小照你好」結束這一輪。',
+      '說「小照你好」開始一輪；說「小照回答」、安靜 3 秒，或說下一個「小照你好」結束這一輪。',
       '錄音頁會在外部瀏覽器開啟，第一次要再登入一次 LINE；錄音中請保持螢幕亮著。',
       '同意即時區分說話人時，系統會把每句標成「說話人 01、02…」；請在錄音頁下方的「確認紀錄」把代號對應到照護員、長輩、家屬（錄音不用停，之後的句子會直接套用），並修正錯字與意圖。',
       '說話人代號只在同一次錄音內有效：停止錄音或切換到其他分頁後重新錄音，代號會從 01 重新開始，需要再對應一次。',
@@ -546,6 +586,7 @@ async function renderRecord(view) {
   function manageResident(r) {
     if (!r) return;
     const alias = h('input', { value: r.alias, maxlength: '20' });
+    const deleteError = h('div', {});
     showDialog(
       h('h3', {}, `管理：${r.alias}`),
       h('div', { class: 'row' }, alias, h('button', {
@@ -557,11 +598,18 @@ async function renderRecord(view) {
           class: 'danger', type: 'button',
           onclick: async () => {
             if (!confirm(`刪除「${r.alias}」及其所有紀錄？`)) return;
-            await api('DELETE', `/api/residents/${r.id}`);
+            // 刪除失敗（例如正在錄音）時，在管理視窗顯示原因
+            try {
+              await api('DELETE', `/api/residents/${r.id}`);
+            } catch (err) {
+              deleteError.replaceChildren(errorBox(err));
+              return;
+            }
             document.getElementById('dialog').close();
             await refreshResidents();
           },
         }, '刪除住民')),
+      deleteError,
     );
   }
 
@@ -608,29 +656,11 @@ async function renderRecord(view) {
     const status = h('p', { class: 'muted' });
     let sessionId = null;
     let timer = null;
-    const micSelect = h('select', { onchange: (e) => micPicker.save(e.target.value) });
-    const micHint = h('p', { class: 'muted' });
     const externalBox = h('input', { type: 'checkbox', id: 'external-mic' });
     externalBox.checked = micPicker.external();
-    micSelect.disabled = externalBox.checked;
-    externalBox.addEventListener('change', () => {
-      micPicker.saveExternal(externalBox.checked);
-      micSelect.disabled = externalBox.checked;
-    });
+    externalBox.addEventListener('change', () => micPicker.saveExternal(externalBox.checked));
     const externalLabel = h('label', { class: 'row', for: 'external-mic' }, externalBox,
-      '使用外接麥克風（關閉手機的回音消除、自動增益；選單裡找不到外接麥克風時勾選）');
-
-    async function fillMics() {
-      let mics = [];
-      try { mics = await micPicker.list(); } catch { /* 列不出來就只有預設麥克風 */ }
-      const saved = micPicker.savedId();
-      micSelect.replaceChildren(h('option', { value: '' }, '手機預設麥克風'),
-        ...mics.map((d, i) => h('option', { value: d.deviceId }, d.label || `麥克風 ${i + 1}`)));
-      micSelect.value = mics.some((d) => d.deviceId === saved) ? saved : '';
-      micHint.textContent = (!mics.length || mics.some((d) => !d.label))
-        ? '還沒允許使用麥克風時，不會列出麥克風名稱；按「確認錄音」允許後就會顯示。剛插上的麥克風沒出現時，請按「重新偵測」。'
-        : '剛插上的麥克風沒出現時，請按「重新偵測」。';
-    }
+      '使用外接麥克風（插上外接麥克風後勾選；勾選後，插著外接麥克風就用外接麥克風，沒插就用手機麥克風）');
 
     function idle() {
       const confirmBox = h('input', { type: 'checkbox', id: 'consent-confirm' });
@@ -641,15 +671,10 @@ async function renderRecord(view) {
         h('p', { class: 'muted' }, `書面同意：${r.written_consent_date}；說話人：${r.voice_consent === 'agreed' ? '即時區分（不保存聲紋）' : '不區分，在確認紀錄逐句選擇'}`),
         noticeBlock('錄音前，請向在場的每一位說明（點開查看 6 點）'),
         h('label', { class: 'row', for: 'consent-confirm' }, confirmBox, '我已向在場者說明以上內容，在場者都同意錄音'),
-        h('p', { class: 'muted' }, '說「小照你好」開始一輪；說「小照請回答」、安靜 3 秒，或說下一個「小照你好」結束這一輪。錄音中請保持螢幕亮著。'),
-        h('div', { class: 'row' }, h('label', {}, '麥克風：'), micSelect,
-          h('button', { class: 'secondary', type: 'button', onclick: fillMics }, '重新偵測')),
+        h('p', { class: 'muted' }, '說「小照你好」開始一輪；說「小照回答」、安靜 3 秒，或說下一個「小照你好」結束這一輪。錄音中請保持螢幕亮著。'),
         externalLabel,
-        micHint,
         startBtn, live,
       );
-      micPicker.onDevicesChanged = fillMics;
-      fillMics();
     }
 
     async function begin(e) {
@@ -658,11 +683,7 @@ async function renderRecord(view) {
         const s = await api('POST', '/api/sessions', { resident_id: r.id, consent_confirmed: true });
         sessionId = s.session_id;
         const external = externalBox.checked;
-        const uploader = await recorder.start(`/api/sessions/${sessionId}`, external ? '' : micSelect.value, external);
-        if (recorder.fellBack) {
-          micPicker.save('');
-          notice('找不到選擇的麥克風，已改用手機預設麥克風。');
-        }
+        const uploader = await recorder.start(`/api/sessions/${sessionId}`, '', external);
         recorder.onTrackEnded = async () => {
           await end();
           notice('麥克風已中斷，錄音已停止。請確認麥克風連線後重新開始。');
@@ -698,7 +719,9 @@ async function renderRecord(view) {
       try {
         const turns = await api('GET', `/api/sessions/${sessionId}/turns`);
         live.replaceChildren(...turns.map((t) => turnView(t, poll)));
-        // 一輪結束（小照請回答／靜音／下一個小照你好）就把新紀錄加到下方的確認紀錄，不必停止錄音
+        // 一輪結束、有低信心的三類問題：跳出勾選視窗（不影響逐字稿與說話人代號）
+        askConfirm(turns.filter((t) => t.ended_at).flatMap(turnUnconfirmed), poll);
+        // 一輪結束（小照回答／靜音／下一個小照你好）就把新紀錄加到下方的確認紀錄，不必停止錄音
         const ended = turns.filter((t) => t.ended_at).length;
         if (ended !== endedTurns) {
           endedTurns = ended;
@@ -747,9 +770,15 @@ async function renderRecord(view) {
         class: 'secondary', type: 'button',
         onclick: async () => {
           if (!input.value.trim()) return;
-          await api('POST', `/api/residents/${r.id}/text-questions`, { question: input.value.trim() });
+          const q = await api('POST', `/api/residents/${r.id}/text-questions`, { question: input.value.trim() });
           input.value = '';
           load();
+          // 打字提問也照同樣的規則：0.5～0.9 跳出勾選視窗；不是三類問題就不送出
+          if (q.status === 'needs_confirm') {
+            askConfirm([{ source: 'text_question', id: q.id, index: 0, question: q.question, intent: q.intent, confidence: q.intent_conf }], load);
+          } else if (q.status === 'not_sent') {
+            notice('小照判斷這不是規範詢問、服務請求或身體不適，沒有送出。');
+          }
         },
       }, '送出')),
       list);
@@ -825,7 +854,7 @@ function turnView(t) {
 }
 
 function endReasonText(reason) {
-  return { answer_keyword: '小照請回答', silence: '靜音 3 秒', next_wake_word: '下一個小照你好', session_stop: '停止錄音' }[reason] || reason;
+  return { answer_keyword: '小照回答', silence: '靜音 3 秒', next_wake_word: '下一個小照你好', session_stop: '停止錄音' }[reason] || reason;
 }
 
 function utteranceView(t, u) {
@@ -834,6 +863,7 @@ function utteranceView(t, u) {
   const win = u.window_id === null || u.window_id === undefined ? '' : ` win${u.window_id % 2}`;
   return h('div', { class: `utt${win}` },
     h('div', {}, u.is_question ? '❓ ' : '', u.text),
+    ...sentenceNotes(u),
     h('div', { class: 'meta' },
       u.speaker_label ? h('span', { class: 'tag' }, `說話人 ${u.speaker_label}`) : null,
       h('span', {}, u.speaker_role),
@@ -844,6 +874,15 @@ function utteranceView(t, u) {
 // ---------- 照護員：確認紀錄（correction-and-cases-tabs P1） ----------
 
 const RECORD_STATUS_TEXT = { draft: '待確認', caregiver_checked: '已確認，等督導', confirmed: '督導已確認' };
+
+// 換字前的原文與「可能聽錯」提醒（2026-10-17 asr-term-correction 第 5.5 節）
+function sentenceNotes(s) {
+  return [
+    s.review_flag ? h('div', { class: 'review-flag' }, `⚠ 可能聽錯，請確認：${s.review_flag}`) : null,
+    s.term_hint ? h('div', { class: 'term-hint' }, `💡 可能是：${s.term_hint}`) : null,
+    s.asr_text ? h('div', { class: 'muted asr-text' }, `原文：${s.asr_text}`) : null,
+  ];
+}
 
 function recordEditor(r, onSaved) {
   const locked = r.status === 'confirmed';
@@ -864,7 +903,8 @@ function recordEditor(r, onSaved) {
       h('select', { disabled: locked, onchange: (e) => edit(i, 'intent', e.target.value || null) },
         h('option', { value: '' }, '（意圖）'),
         app.intentLabels.map((label) => h('option', { value: label, selected: label === s.intent }, label)))),
-    h('textarea', { rows: 2, disabled: locked, oninput: (e) => edit(i, 'text', e.target.value) }, s.text)));
+    h('textarea', { rows: 2, disabled: locked, oninput: (e) => edit(i, 'text', e.target.value) }, s.text),
+    ...sentenceNotes(s)));
 
   async function save(check) {
     const body = { speakers, sentences: [...edits.values()] };
@@ -888,12 +928,16 @@ function recordEditor(r, onSaved) {
 // ---------- 照護員：我的案件（correction-and-cases-tabs P4） ----------
 
 const CASE_VIEWS = [
+  ['unconfirmed', '待確認的問題', renderUnconfirmed],
   ['line', 'LINE案件', renderLineCases],
+  ['typed', '手動打字提問', renderMyTextQuestions],
   ['transcripts', '照護員查看逐字稿', renderMyTranscripts],
   ['questions', '給督導的問題與回覆', renderMyQuestions],
 ];
 
 async function renderCases(view) {
+  // 有沒確認的問題時，先顯示「待確認的問題」
+  if (!app.casesView && (await refreshUnconfirmedBadge()).length) app.casesView = 'unconfirmed';
   const content = h('div', {});
   const buttons = CASE_VIEWS.map(([key, label]) => h('button', {
     type: 'button', class: key === (app.casesView || 'line') ? 'primary' : 'secondary', 'data-view': key,
@@ -912,19 +956,54 @@ async function renderCases(view) {
   await show();
 }
 
+async function renderUnconfirmed(view) {
+  const items = await refreshUnconfirmedBadge();
+  const sourceText = { turn: '錄音模式', text_question: '手動打字提問' };
+  const rerender = () => { view.replaceChildren(); renderUnconfirmed(view); };
+  const act = (item, send) => async (e) => {
+    e.currentTarget.disabled = true;
+    try { await sendUnconfirmed([item], send); } catch (err) { notice(err.message); }
+    rerender();
+  };
+  view.append(h('div', { class: `card ${items.length ? 'unconfirmed' : ''}` },
+    h('h2', {}, items.length ? `❗ 有 ${items.length} 個問題等你確認` : '待確認的問題'),
+    h('p', {}, '小照不太確定這些是不是要問的問題（規範詢問、服務請求、身體不適，信心未達 90%）。要問就按「送出」，不用就按「不用」。'),
+    items.length ? null : h('p', { class: 'muted' }, '目前沒有等你確認的問題。'),
+    ...items.map((i) => h('div', { class: 'list-item', style: 'cursor:default' },
+      h('div', { class: 'muted' }, `${sourceText[i.source] || i.source} ・ ${i.resident_alias} ・ ${fmtTime(i.created_at)} ・ ${i.intent} ${(i.confidence * 100).toFixed(0)}%`),
+      h('div', {}, i.question),
+      h('div', { class: 'row', style: 'margin-top:6px' },
+        h('button', { class: 'primary', type: 'button', onclick: act(i, true) }, '送出'),
+        h('button', { class: 'secondary', type: 'button', onclick: act(i, false) }, '不用'))))));
+}
+
+async function renderMyTextQuestions(view) {
+  const items = await api('GET', '/api/my/text-questions');
+  view.append(h('div', { class: 'card' },
+    h('h2', {}, '手動打字提問'),
+    h('p', { class: 'muted' }, '在錄音頁打字提問的所有問題與回答。'),
+    items.length ? null : h('p', { class: 'muted' }, '目前沒有打字提問。'),
+    ...items.map((q) => h('div', { class: `list-item ${q.status === 'needs_confirm' ? 'unconfirmed' : ''}`, style: 'cursor:default' },
+      q.answer ? h('div', { class: `answer ${q.status === 'human_answered' ? 'human' : ''}` }, q.answer)
+        : h('div', { class: 'muted' }, q.status === 'pending' ? pendingText(q.created_at) : (STATUS_TEXT[q.status] || q.status)),
+      h('div', {}, q.question),
+      h('div', { class: 'muted' }, `${q.resident_alias} ・ ${fmtTime(q.created_at)}`)))));
+}
+
 async function renderMyTranscripts(view) {
   const records = await api('GET', '/api/records');
   view.append(h('div', { class: 'card' },
     h('h2', {}, '錄音逐字稿'),
     h('p', { class: 'muted' }, '每一輪的逐字稿（已套用你和督導的修正）。要修改請到錄音頁下方的「確認紀錄」；未經督導確認的保存 7 天。'),
     records.length ? null : h('p', { class: 'muted' }, '目前沒有逐字稿。'),
-    ...records.map((r) => h('div', { class: 'list-item', style: 'cursor:default' },
+    // 每一輪的逐字稿獨立框起來
+    ...records.map((r) => h('div', { class: 'turn-box' },
       h('div', { class: 'muted' }, `${r.resident_alias} ・ ${fmtTime(r.created_at)} ・ `, h('span', { class: 'tag' }, RECORD_STATUS_TEXT[r.status])),
       r.answer ? h('div', { class: `answer ${r.answer_status === 'human_answered' ? 'human' : ''}` }, r.answer)
         : (r.answer_status ? h('div', { class: 'answer' }, STATUS_TEXT[r.answer_status] || r.answer_status) : null),
       ...r.doc.sentences.map((s) => h('div', { class: 'utt' },
         h('div', { class: 'meta' }, h('span', { class: 'tag' }, s.role), s.intent ? h('span', {}, s.intent) : null),
-        h('div', {}, s.text)))))));
+        h('div', {}, s.text), ...sentenceNotes(s)))))));
 }
 
 async function renderMyQuestions(view) {
@@ -1176,6 +1255,7 @@ async function reviewEditor(view, r) {
           h('select', { disabled: locked, onchange: (e) => { s.intent = e.target.value || null; } }, opts(app.intentLabels, s.intent, '（意圖）')),
           h('select', { disabled: locked, onchange: (e) => { s.intent_owner = e.target.value || null; } }, opts(app.speakerRoles, s.intent_owner, '（需求歸屬）'))),
         text,
+        ...sentenceNotes(s),
         locked ? null : h('div', { class: 'row', style: 'margin-top:4px; flex-wrap:wrap' },
           last ? null : h('button', { class: 'secondary', type: 'button', onclick: () => merge(i) }, '與下一句合併'),
           h('button', { class: 'secondary', type: 'button', onclick: () => split(i, text) }, '從游標處拆開'),
