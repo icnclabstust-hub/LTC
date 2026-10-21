@@ -36,7 +36,8 @@ try {
 Remove-Item $log -ErrorAction SilentlyContinue
 $startArgs = @{
     FilePath = 'cloudflared'
-    ArgumentList = @('tunnel', '--no-autoupdate', '--url', "http://127.0.0.1:$Port")
+    # 實驗室網路擋 QUIC（UDP 7844），預設 quic 會一直重試連不上（530），改走 http2（TCP 443）
+    ArgumentList = @('tunnel', '--no-autoupdate', '--protocol', 'http2', '--url', "http://127.0.0.1:$Port")
     RedirectStandardError = $log
     PassThru = $true
 }
