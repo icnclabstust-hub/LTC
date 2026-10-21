@@ -44,6 +44,10 @@ py -3.14 -m venv .venv-xiaozhao
 ngrok http --url=<NGROK_DOMAIN> 8010
 ```
 
+不用 ngrok 時，可改用 Cloudflare 免費通道（不需帳號，但每次網址會變）：先 `winget install --id Cloudflare.cloudflared`，
+啟動服務後按兩下 `tools\start_cloudflare_tunnel.cmd`。腳本會自動把 LINE Webhook 設成新網址並測試；
+LIFF 的 Endpoint URL 則要依腳本印出的網址到 LINE Login channel 手動更新。
+
 第一次啟動載入模型約 20 秒；載入完成前，錄音相關 API 會回 503。
 停止：Ctrl+C 結束服務並關閉 ngrok。
 

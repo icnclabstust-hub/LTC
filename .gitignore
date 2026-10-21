@@ -9,6 +9,11 @@
 # ===== 資料：資料與系統分開，資料一律不進版控 =====
 data/
 backups/
+xiaozhao_data/
+# 前端模型（語音、意圖）實際放在 /ltc-data，repo 內只有指向它的目錄連結
+model-downloads/
+exported_bert_*/
+exported_ctx_*/
 *.sqlite3
 *.db
 *.db-shm

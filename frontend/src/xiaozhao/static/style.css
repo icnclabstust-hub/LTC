@@ -92,7 +92,18 @@ button:disabled { opacity: .5; }
 /* 問句 window：相鄰的 window 交替底色 */
 .utt.win1 { background: color-mix(in srgb, var(--accent) 8%, transparent); }
 .utt .meta { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; font-size: .85rem; color: var(--muted); }
+/* 等照護員確認是否送出的問題（confirm-send-and-keyword 第 4.3 節） */
+.unconfirmed { border: 2px solid var(--danger); background: var(--warn-bg); color: var(--warn-text); }
+.unconfirmed .list-item { border-color: var(--danger); }
+#tabs button.alert::after { content: " ❗"; }
+.check-item { display: flex; gap: 8px; align-items: flex-start; padding: 6px 0; border-bottom: 1px solid var(--line); }
+/* 可能聽錯的提醒與換字前原文（asr-term-correction 第 5.5 節） */
+.review-flag { margin-top: 4px; padding: 2px 6px; border-radius: 4px; background: var(--warn-bg); color: var(--warn-text); font-size: .85rem; }
+.asr-text { font-size: .8rem; }
+/* 讀音比對的「可能是」（phonetic-term-match 第 5.4 節）：和「可能聽錯」區分 */
+.term-hint { margin-top: 4px; padding: 2px 6px; border-radius: 4px; border: 1px dashed var(--accent); font-size: .85rem; }
 .tag { display: inline-block; padding: 0 6px; border-radius: 4px; border: 1px solid var(--line); font-size: .8rem; }
+.turn-box { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin-top: 10px; background: var(--bg); }
 .list-item { padding: 10px 0; border-top: 1px solid var(--line); cursor: pointer; }
 .list-item:first-child { border-top: 0; }
 table { width: 100%; border-collapse: collapse; font-size: .9rem; }

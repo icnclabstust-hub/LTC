@@ -1,7 +1,9 @@
+import logging
 from dataclasses import dataclass, field
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import ltc_graph
 from app.core.cache import get_cached_result, set_cached_result
 from app.core.evidence import judge_evidence
 from app.core.faithfulness import check_faithfulness
@@ -31,6 +33,8 @@ _REFUSAL_MESSAGES = {
         "這個問題涉及醫療、用藥或個案安全，須由督導或醫護人員判斷，小照不提供建議。若個案有立即危險，請撥 119。"
     ),
 }
+
+logger = logging.getLogger(__name__)
 
 _retriever = ChunkRetriever()
 _reranker = Reranker()
@@ -73,6 +77,16 @@ async def run_query_pipeline(query_text: str, session: AsyncSession) -> QueryRes
     if is_sensitive(query_text):
         return _refused(RefusalReason.SENSITIVE)
 
+    # 補助額度、部分負擔、分區、價格、資格、據點：結構化資料直接回答，不經 LLM（2026-10-19 ltc-kb-graph 5.3 節）
+    try:
+        structured = await ltc_graph.answer(query_text, session)
+    except Exception:  # noqa: BLE001 — 結構化分支故障時回到原 RAG 路徑，不影響回答
+        logger.exception("結構化查詢失敗，改走 RAG")
+        structured = None
+    if structured is not None:
+        return QueryResult(answer=structured.answer, sources=structured.sources, confidence="high",
+                           disclaimer=_ANSWERED_DISCLAIMER)
+
     if intent == Intent.LTC_POINTS:
         cities = extract_cities(query_text)
         if not is_in_service_area(cities):
@@ -104,6 +118,9 @@ async def run_query_pipeline(query_text: str, session: AsyncSession) -> QueryRes
     # 模糊區依需求決議第 7 題「不確定一律轉督導定案」，不再生成「僅供參考」的答案；
     # 附上檢索到的原文，讓督導判斷
     if verdict == EvidenceVerdict.AMBIGUOUS:
+        # 與證據不足分支相同：沒有長照領域詞的問題是範圍外，只記錄、不轉督導（2026-10-19 ltc-kb-graph 第 5.4 節）
+        if not has_domain_term(query_text):
+            return _refused(RefusalReason.OUT_OF_SCOPE)
         return _refused(RefusalReason.LOW_CONFIDENCE, top_chunks)
 
     draft_answer = await generate_answer(query_text, top_chunks)

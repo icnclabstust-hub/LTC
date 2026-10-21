@@ -37,14 +37,14 @@ def turns(db):
 
 def test_strip_keywords_handles_homophones():
     assert strip_keywords("小趙你好，今天要洗澡嗎") == ("今天要洗澡嗎", True, False)
-    assert strip_keywords("好的，小趙請回答") == ("好的", False, True)
+    assert strip_keywords("好的，小趙回答") == ("好的", False, True)
     assert strip_keywords("小照你好") == ("", True, False)
 
 
 def test_answer_keyword_ends_turn_and_keywords_not_transcribed(db):
     engines = FakeEngines(
-        texts={0: "小照你好", 1: "阿嬤今天不想洗澡", 2: "小照請回答"},
-        kws_schedule=[(1.6, "小照你好"), (5.6, "小照請回答")],
+        texts={0: "小照你好", 1: "阿嬤今天不想洗澡", 2: "小照回答"},
+        kws_schedule=[(1.6, "小照你好"), (5.6, "小照回答")],
     )
     processor, _ = make_session(db, engines)
     feed(processor, build_audio([
@@ -141,18 +141,19 @@ def test_anonymous_speaker_codes_and_role_mapping_within_session(db):
     engines = FakeEngines(
         texts={0: "小照你好", 1: "我來幫你量血壓", 2: "好啊", 3: "小照你好", 4: "等一下要吃飯"},
         speakers={1: 3, 2: 5, 4: 3},
-        kws_schedule=[(0.9, "小照你好"), (5.5, "小照你好")],
+        kws_schedule=[(0.9, "小照你好"), (7.9, "小照你好")],
     )
     processor, _ = make_session(db, engines, consent="agreed")
-    chunks = to_chunks(build_audio([("speech", 0.8, 0), ("silence", 0.5), ("speech", 1, 1), ("silence", 0.5),
-                                    ("speech", 1, 2), ("silence", 0.8)]))
+    # 每句 2.2 秒：短於 2 秒的句子不開新代號
+    chunks = to_chunks(build_audio([("speech", 0.8, 0), ("silence", 0.5), ("speech", 2.2, 1), ("silence", 0.5),
+                                    ("speech", 2.2, 2), ("silence", 0.8)]))
     for seq, chunk in enumerate(chunks):
         processor.accept_chunk(seq, chunk)
     first = turns(db)[0]
     assert [(u["speaker_label"], u["speaker_role"]) for u in first["utterances"]] == [("01", "未辨識"), ("02", "未辨識")]
     processor.map_speaker("01", "照護員")
 
-    rest = to_chunks(build_audio([("speech", 0.8, 3), ("silence", 0.5), ("speech", 1, 4), ("silence", 0.5)]))
+    rest = to_chunks(build_audio([("speech", 0.8, 3), ("silence", 0.5), ("speech", 2.2, 4), ("silence", 0.5)]))
     for offset, chunk in enumerate(rest):
         processor.accept_chunk(len(chunks) + offset, chunk)
     processor.stop()
@@ -161,6 +162,16 @@ def test_anonymous_speaker_codes_and_role_mapping_within_session(db):
     assert "voiceprints" not in {r["name"] for r in db.all("SELECT name FROM sqlite_master WHERE type = 'table'")}
     record = db.one("SELECT doc FROM records WHERE turn_id = ?", (turns(db)[1]["id"],))
     assert '"01": "照護員"' in record["doc"]
+
+
+def test_short_sentence_joins_nearest_speaker(db):
+    # 2026-10-17 三人實測：短片段多開代號 → 短於 2 秒的句子歸給最接近的人
+    engines = FakeEngines(texts={0: "小照你好", 1: "我來幫你量血壓", 2: "還是"}, speakers={1: 3, 2: 5},
+                          kws_schedule=[(0.9, "小照你好")])
+    processor, _ = make_session(db, engines, consent="agreed")
+    feed(processor, build_audio([("speech", 0.8, 0), ("silence", 0.5), ("speech", 2.2, 1), ("silence", 0.5),
+                                 ("speech", 1, 2), ("silence", 4)]))
+    assert [u["speaker_label"] for u in turns(db)[0]["utterances"]] == ["01", "01"]
 
 
 def test_declined_consent_never_computes_voiceprint(db):

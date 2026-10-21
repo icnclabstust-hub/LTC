@@ -84,3 +84,9 @@ def test_mask_pii_replaces_national_id_and_phones():
     masked = mask_pii("個案 A123456789 的家屬電話 0912-345-678，機構 05-2778785，請撥 1966")
     assert masked == "個案 [身分證] 的家屬電話 [電話]，機構 [電話]，請撥 1966"
     assert mask_pii(masked) == masked
+
+
+@pytest.mark.parametrize("text", ["伊無咧喘氣矣，按怎辦？", "一進門就聞到很重的瓦斯味", "失智的阿嬤不見了"])
+def test_emergency_descriptions_are_never_out_of_scope(text):
+    """模糊區無領域詞會判成範圍外（不轉督導）；緊急描述必須算領域內，維持轉督導（2026-10-19 ltc-kb-graph 實測）。"""
+    assert has_domain_term(text)

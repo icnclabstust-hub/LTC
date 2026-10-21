@@ -1,7 +1,7 @@
 # 小照 LINE Bot＋LIFF：後端串接說明
 
 > 給：後端組（吳明叡）
-> 來自：吳佳杰，2026-10-13（2026-10-14 更新）
+> 來自：吳佳杰，2026-10-13（2026-10-14、2026-10-19 更新；10/15～10/18 的改動見第 7 節）
 > 對應程式：`src/xiaozhao/`（隨附 zip）；設計文件：`2026-10-08-ltc-awe-liff-recording-and-line-cases.md`
 > 狀態：本服務預設接**模擬後端**（`BACKEND_MODE=mock`）；2026-10-14 起可依後端組 API 合約串接（`BACKEND_MODE=http`，第 3 節）。本文列出本服務會送什麼、期待收到什麼，以及需要後端組決定的事項（第 4 節）；欄位名稱都可以調整。
 
@@ -167,11 +167,11 @@ class BackendResult:
 | `tools/fake_backend.py`、`tools/backend_latency.py` | 本機假後端、回覆時間統計 |
 | `requirements-xiaozhao.txt` | Python 3.14 套件清單（torch 用 CPU 版） |
 | `.env.example` | 設定範本；實際的 `.env`（含 LINE 金鑰、權杖）不附 |
-| `docs/` | 本說明與相關設計文件（LIFF、三層定義、快取策略、確認／修正分頁、一輪多意圖、問句 window、意圖模型 N0、外接麥克風、後端串接、背景執行） |
+| `docs/` | 本說明與相關設計文件（LIFF、三層定義、快取策略、確認／修正分頁、一輪多意圖、問句 window、意圖模型 N0／N0v3、外接麥克風、後端串接、背景執行；10/15～10/18：低信心確認與 LINE 規則、照護用詞修正、讀音比對、10/18 統整報告） |
 
-- **模型沒有放進 zip**（服務用到的合計約 810 MB，含 N0；需要 A1 時另加約 390 MB）：
-  - VAD、Paraformer、KWS、聲紋、標點模型（`android/AweIntentSpike/model-downloads/`）；
-  - 意圖模型（預設 N0：`exported_ctx_care7/N0_s42/model`；A1：`exported_bert_care7/A1_s42/model`）。
+- **模型沒有放進 zip**（服務用到的合計約 775 MB；需要 A1 時另加約 390 MB）：
+  - VAD、Paraformer、KWS、聲紋、標點模型（`android/AweIntentSpike/model-downloads/`，約 384 MB）；
+  - 意圖模型（預設 N0v3：`exported_ctx_care7/N0v3_s42/model`，約 391 MB；回滾用 N0：`exported_ctx_care7/N0_s42/model`；A1：`exported_bert_care7/A1_s42/model`）。
 
   只看程式、串接介面不需要模型；要實際跑錄音流程時再另外提供。
 - 不需要錄音也能測後端串接：執行單元測試，或用假後端加上 LINE 聊天室文字訊息（流程 ④）。缺模型時服務仍可啟動（錄音相關 API 回 503），文字訊息照常送後端，但 `intent`、`intent_conf` 會是 `null`。
@@ -215,3 +215,32 @@ Authorization: Bearer <EXPORT_TOKEN>    ← 由本服務另外提供，請勿放
 - 不含：照護員 LINE ID、音訊、系統修正前的原始輸出。
 - 保存：本服務在後端第一次取走後再保留 30 天；確認後一直未被取走的，最長保存 90 天。請定期抓取。
 - 錯誤：權杖錯誤 401；本服務未設定權杖（匯出未啟用）404；參數錯誤 400。
+
+## 7. 2026-10-15～10-18 的改動（2026-10-19 新增）
+
+詳細欄位與實測數據見 `2026-10-18-ltc-awe-oct18-report.html`（第四節為 API 欄位）。
+
+### 7.1 對後端串接有影響的
+
+| 改動 | 對後端的影響 |
+|---|---|
+| 意圖模型改為 **N0v3**（門檻仍 0.9） | `intent`、`intent_conf` 的值會不同；欄位不變 |
+| **低信心由照護員確認**：規範詢問、服務請求、身體不適信心 0.5～0.9 時，照護員勾選後才送 | 這類問題的 `POST /v1/query` 會**晚一點才送**（照護員確認後），`provisional: false`；照護員按「不用」就不會送 |
+| **LIFF 打字提問**照同樣規則：三類 ≥ 0.9 送、0.5～0.9 確認後送、其他不送 | 送出的打字提問變少 |
+| **LINE 聊天室規則**：只回答規範詢問並附出處；醫療、用藥、補助金額直接轉督導；其他不回答 | 只有「規範詢問」且不含醫療、用藥、補助字詞的才送 `/v1/query`；回答後附 `citations` 的出處（每筆可為字串或含 `title`、`article` 的物件） |
+| **結束詞改為「小照回答」**（「小照請回答」不再結束一輪） | 送後端的文字已去掉「小照請回答」 |
+| **照護用詞修正**：語音辨識轉完後依對照表換字（例：附件師→復健師），再做讀音比對 | 送後端的 `text` 是**修正後的文字** |
+
+### 7.2 本服務內部的改動（後端不需處理）
+
+- 確認紀錄、即時逐字稿顯示「原文：…」「⚠ 可能聽錯，請確認」「💡 可能是：〇〇」。
+- 「我的案件」新增「待確認的問題」（❗ 提醒）與「手動打字提問」；LIFF 移除麥克風下拉選單。
+- 語音片段開頭多補 0.3 秒；短於 2 秒的句子歸給最接近的說話人。
+- 資料庫新增欄位：`utterances.asr_text`、`review_flag`、`term_hint`；`text_questions.intent`、`intent_conf`；`daily_reports.asr_text`（啟動時自動補欄位）。
+- **匯出 API（第 6 節）不變**：只給修正後的欄位，不含語音辨識原文與提醒。
+
+### 7.3 新增設定與依賴
+
+- 新依賴：`pypinyin==0.55.0`（MIT），已加入 `requirements-xiaozhao.txt`。
+- 新設定（`.env.example` 已列出，預設都開；設 0 可關閉回到前一版）：`CONFIRM_LOW_CONFIDENCE`、`LINE_REGULATION_ONLY`、`ASR_CORRECTION`、`REVIEW_FLAGS`、`PHONETIC_MATCH`、`VAD_PREROLL_SECONDS=0.3`。
+- 照護用詞的規則與詞表在 `src/xiaozhao/resources/`：`asr_corrections.csv`（換字規則）、`review_terms.csv`（衝突提醒詞表）、`care_terms.csv`（讀音比對的長照用詞）；只載入「審閱」為 OK 的列。

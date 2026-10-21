@@ -4,6 +4,7 @@
 """
 
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -30,12 +31,18 @@ RECORD_UNCONFIRMED_TTL_SECONDS = 7 * 24 * 3600
 # 2026-10-13 評估（10 段人工標註錄音）：0.5 分群 F1 0.785（同一代號是同一人 0.685、同一人在同一代號 0.919）；
 # 0.6 為 0.835（0.793、0.883）。曾改為 0.6，提案學生同日指示改回 0.5
 SPEAKER_GROUP_THRESHOLD = 0.5
+# 短於此秒數的句子不開新的說話人代號，歸給最接近的人（2026-10-17 三人實測：0.5～1.6 秒的片段多開了 3 個代號）
+SHORT_SPEAKER_SECONDS = 2.0
 RECORD_AFTER_EXPORT_TTL_SECONDS = 30 * 24 * 3600
 RECORD_CONFIRMED_MAX_TTL_SECONDS = 90 * 24 * 3600
 EXPORT_MAX_LIMIT = 500
 
 # 觸發預取的意圖類別（cache-strategy 第 4 節，待老師確認）
 PREFETCH_INTENTS = frozenset({"規範詢問", "服務請求", "身體不適陳述"})
+# 低於送出門檻、但信心達此值的三類意圖：由照護員確認後才送出（2026-10-15 confirm-send-and-keyword 第 1.2 節）
+CONFIRM_MIN_CONF = 0.5
+# 醫療、用藥、補助金額一律轉督導（LINE 聊天室使用規則；原本只寫在模擬後端）
+HUMAN_ONLY_PATTERN = re.compile(r"藥|醫|病|診|補助|金額|多少錢")
 
 # 保存期限（設計文件 2.1 節「資料保存」）
 RECORD_TTL_SECONDS = 24 * 3600
@@ -48,8 +55,9 @@ INTENT_LABELS = ("情緒安撫或閒聊", "拒絕或抗拒", "服務請求", "�
 WAKE_KEYWORD = "小照你好"
 # KWS 漏抓時的補抓：輪外片段只轉開頭這麼多秒、比對喚醒詞，結果不保存；0 表示關閉（2026-10-13 wake-word-miss spike）
 WAKE_ASR_FALLBACK_SECONDS = 2.0
-# 結束詞：原「小照給我回答結果」太長，2026-10-12 老師指示改短；「給我結果」實測後再改為「小照請回答」
-ANSWER_KEYWORD = "小照請回答"
+# 結束詞：原「小照給我回答結果」太長，2026-10-12 老師指示改短；「給我結果」實測後再改為「小照請回答」；
+# 2026-10-15 提案學生改為「小照回答」，「小照請回答」不再能結束一輪（confirm-send-and-keyword 第 1.3 節）
+ANSWER_KEYWORD = "小照回答"
 
 
 def _load_dotenv(path: Path) -> None:
@@ -115,6 +123,19 @@ class Settings:
     line_reply_wait_seconds: float = 50.0
     # 緊急固定回覆附上的機構電話（嘉安居服，依店面招牌，待機構確認）
     agency_phone: str = "05-2778785"
+    # 三類意圖信心低於預取門檻（0.9）時由照護員確認才送出；服務由 CONFIRM_LOW_CONFIDENCE 開啟，測試預設關閉
+    confirm_low_confidence: bool = False
+    # LINE 聊天室只回答規範詢問、醫療用藥補助轉督導、其餘不回答（LTCA 2026-10-15）。與 2026-10-19 需求決議
+    # （免喚醒詞、補助金額可回答，fe-be-integration）衝突，合併後服務預設關閉，需要時設 LINE_REGULATION_ONLY=1
+    line_regulation_only: bool = False
+    # 語音辨識照護用詞修正、前後文衝突提醒（2026-10-17 asr-term-correction）；服務預設開、測試預設關
+    asr_correction: bool = False
+    # 每段語音送轉文字前往前多補的秒數：VAD 判斷開始說話較慢，停頓後的第一個字（「麻煩」的「麻」）會被切掉
+    # （2026-10-17 實測：0.3 秒時第一個字完整 15/15，原本 6/15）；服務預設 0.3、測試預設 0
+    vad_preroll_seconds: float = 0.0
+    review_flags: bool = False
+    # 讀音相近就比對（2026-10-17 phonetic-term-match）；服務預設開、測試預設關
+    phonetic_match: bool = False
     # 測試用：略過 LINE ID token 驗證，直接把 Bearer 值當成 userId（只允許綁 127.0.0.1 時使用）
     dev_fake_auth: bool = False
     model_downloads: Path = field(default=MODEL_DOWNLOADS)
@@ -145,7 +166,8 @@ def load_settings() -> Settings:
         data_dir=Path(env.get("XIAOZHAO_DATA_DIR", REPO_ROOT / "xiaozhao_data")),
         intent_model_dir=Path(env.get("INTENT_MODEL_DIR", REPO_ROOT / "exported_bert_care7" / "A1_s42" / "model")),
         intent_model=env.get("INTENT_MODEL", "n0").lower(),
-        n0_model_dir=Path(env.get("N0_MODEL_DIR", REPO_ROOT / "exported_ctx_care7" / "N0_s42" / "model")),
+        # 2026-10-15 提案學生決定改用 N0v3（補充反問、對照句與實測資料；confirm-send-and-keyword 第 1.1 節）
+        n0_model_dir=Path(env.get("N0_MODEL_DIR", REPO_ROOT / "exported_ctx_care7" / "N0v3_s42" / "model")),
         # BERT 信心偏高，門檻須以交叉驗證資料訂定（cache-strategy 第 4 節）；0.9 只是暫定值
         prefetch_threshold=float(env.get("PREFETCH_THRESHOLD", "0.9")),
         backend_mode=env.get("BACKEND_MODE", "mock"),
@@ -167,6 +189,12 @@ def load_settings() -> Settings:
         reply_target_seconds=float(env.get("REPLY_TARGET_SECONDS", "3")),
         line_reply_wait_seconds=float(env.get("LINE_REPLY_WAIT_SECONDS", "50")),
         agency_phone=env.get("AGENCY_PHONE", "05-2778785"),
+        confirm_low_confidence=env.get("CONFIRM_LOW_CONFIDENCE", "1") != "0",
+        line_regulation_only=env.get("LINE_REGULATION_ONLY", "0") == "1",
+        asr_correction=env.get("ASR_CORRECTION", "1") != "0",
+        vad_preroll_seconds=float(env.get("VAD_PREROLL_SECONDS", "0.3")),
+        review_flags=env.get("REVIEW_FLAGS", "1") != "0",
+        phonetic_match=env.get("PHONETIC_MATCH", "1") != "0",
         dev_fake_auth=env.get("XIAOZHAO_DEV_FAKE_AUTH", "") == "1",
     )
 

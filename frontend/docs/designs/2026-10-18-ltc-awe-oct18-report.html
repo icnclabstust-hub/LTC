@@ -1,0 +1,428 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>10/18 統整報告</title>
+<style>
+  :root{
+    --bg:#eef2f1; --surface:#ffffff; --surface-2:#e3e9e7;
+    --ink:#16232a; --ink-2:#48555d; --ink-3:#71807f; --border:#ccd6d3;
+    --accent:#0e7c86; --accent-soft:#dcecec;
+    --warn:#b23b4e; --warn-soft:#f5e2e5;
+    --font-head:'Noto Serif TC', ui-serif, 'Songti TC', serif;
+    --font-body:'Noto Sans TC', ui-sans-serif, 'PingFang TC', 'Microsoft JhengHei', system-ui, sans-serif;
+    --font-mono:'JetBrains Mono', ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#0f151b; --surface:#171f26; --surface-2:#1e2830;
+      --ink:#e7ecee; --ink-2:#aab6bb; --ink-3:#7e8c91; --border:#2b3841;
+      --accent:#3ec2be; --accent-soft:#183130; --warn:#e88a97; --warn-soft:#3a2026;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#0f151b; --surface:#171f26; --surface-2:#1e2830;
+    --ink:#e7ecee; --ink-2:#aab6bb; --ink-3:#7e8c91; --border:#2b3841;
+    --accent:#3ec2be; --accent-soft:#183130; --warn:#e88a97; --warn-soft:#3a2026;
+  }
+  *{ box-sizing:border-box; }
+  body{ background:var(--bg); color:var(--ink); font-family:var(--font-body); line-height:1.75; margin:0; padding:0 16px; }
+  .page{ max-width:880px; margin:0 auto; padding-block:48px 88px; display:flex; flex-direction:column; gap:48px; }
+  h1,h2,h3{ font-family:var(--font-head); margin:0; text-wrap:balance; }
+  h1{ font-size:clamp(26px,5vw,36px); font-weight:700; }
+  h2{ font-size:22px; font-weight:600; }
+  h3{ font-size:17px; font-weight:600; }
+  p{ margin:0; color:var(--ink-2); }
+  strong{ color:var(--ink); font-weight:600; }
+  code{ font-family:var(--font-mono); font-size:.86em; background:var(--surface-2); padding:1px 5px; border-radius:4px; word-break:break-word; }
+  .eyebrow{ font-family:var(--font-mono); font-size:12.5px; letter-spacing:.08em; text-transform:uppercase; color:var(--accent); }
+  header{ display:flex; flex-direction:column; gap:16px; }
+  .meta-row{ display:flex; flex-wrap:wrap; gap:8px 22px; font-size:13.5px; color:var(--ink-3); border-top:1px solid var(--border); padding-top:14px; }
+  .meta-row b{ color:var(--ink-2); font-weight:600; }
+  section{ display:flex; flex-direction:column; gap:14px; }
+  .toc{ display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:10px; }
+  .toc a{ display:flex; flex-direction:column; gap:2px; background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:12px 14px; text-decoration:none; color:var(--ink); }
+  .toc a span{ font-size:13px; color:var(--ink-3); }
+  .callout{ background:var(--warn-soft); border-left:4px solid var(--warn); padding:14px 18px; border-radius:6px; }
+  .callout p{ color:var(--ink); }
+  .note{ background:var(--accent-soft); border-left:4px solid var(--accent); padding:12px 16px; border-radius:6px; font-size:14.5px; }
+  .note p{ color:var(--ink); }
+  .note ul{ color:var(--ink); }
+  .table-wrap{ overflow-x:auto; background:var(--surface); border:1px solid var(--border); border-radius:8px; }
+  table{ width:100%; border-collapse:collapse; font-size:14.5px; min-width:580px; }
+  th,td{ padding:9px 12px; text-align:left; vertical-align:top; border-bottom:1px solid var(--border); }
+  th{ background:var(--surface-2); font-weight:600; color:var(--ink); white-space:nowrap; }
+  tr:last-child td{ border-bottom:none; }
+  td.num{ font-family:var(--font-mono); white-space:nowrap; }
+  ul,ol{ margin:0; padding-left:22px; color:var(--ink-2); }
+  li{ margin:4px 0; }
+  .steps{ counter-reset:s; list-style:none; padding:0; display:flex; flex-direction:column; gap:10px; }
+  .steps li{ counter-increment:s; background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:12px 16px 12px 52px; position:relative; margin:0; color:var(--ink-2); }
+  .steps li::before{ content:counter(s); position:absolute; left:16px; top:12px; width:24px; height:24px; border-radius:50%; background:var(--accent); color:var(--surface); font-weight:700; font-size:13px; display:flex; align-items:center; justify-content:center; }
+  .tag{ display:inline-block; font-size:12.5px; padding:0 8px; border-radius:10px; border:1px solid var(--border); white-space:nowrap; }
+  .tag.ok{ background:var(--accent-soft); border-color:var(--accent); color:var(--ink); }
+  .tag.neg{ background:var(--warn-soft); border-color:var(--warn); color:var(--ink); }
+  footer{ font-size:13px; color:var(--ink-3); border-top:1px solid var(--border); padding-top:14px; }
+</style>
+</head>
+<body>
+<main class="page">
+
+<header>
+  <div class="eyebrow">2026-10-18 統整報告 · 吳佳杰</div>
+  <h1>LIFF 語音接收、切句切輪與意圖分析：論文、做法與實測召回率</h1>
+  <p>統整三件事：參考的論文在說什麼、本服務從收音到意圖判斷每一步怎麼做，以及用 LIFF 實際錄音量到的召回率。</p>
+  <div class="meta-row">
+    <span><b>報告人</b> 吳佳杰</span>
+    <span><b>涵蓋期間</b> 2026-10-11～10-18</span>
+    <span><b>詳細資料</b> 2026-10-13-ltc-awe-oct19-report 與 docs/designs/ 各設計文件</span>
+  </div>
+</header>
+
+<nav class="toc">
+  <a href="#s1"><strong>一、論文在說什麼</strong><span>切輪、切句、意圖前文、意圖門檻</span></a>
+  <a href="#s2"><strong>二、系統怎麼做</strong><span>收音 → 切輪 → 轉文字 → 意圖 → 送出</span></a>
+  <a href="#s3"><strong>三、LIFF 實測召回率</strong><span>照護用詞 59.4% → 76.8%；意圖 86.5%</span></a>
+  <a href="#s4"><strong>四、麥克風與手機測試</strong><span>RODE 字錯誤率 10.3%；手機 25 公分 13.4%</span></a>
+  <a href="#s5"><strong>五、意圖模型 N0v3</strong><span>中文 RoBERTa＋雙輸出頭</span></a>
+  <a href="#s6"><strong>六、低信心由照護員確認</strong><span>過渡功能</span></a>
+  <a href="#s7"><strong>七、照護用詞修正與提醒</strong><span>過渡功能</span></a>
+  <a href="#s8"><strong>八、讀音相近比對</strong><span>連聲調相同才換</span></a>
+  <a href="#s9"><strong>九、後端 API 欄位</strong><span>/v1/query、/v1/requests、/v1/scene</span></a>
+  <a href="#s10"><strong>十、限制與下一步</strong><span>朗讀者少、文稿錄音</span></a>
+</nav>
+
+<section id="s1">
+  <h2>一、論文在說什麼、我們用了哪些部分</h2>
+  <p>老師 10/12 要求「多輪不能只靠靜音切，要查論文的演算法」。我把問題拆成四個子問題，各找代表論文：</p>
+  <div class="table-wrap">
+    <table>
+      <tr><th>子問題</th><th>論文</th><th>論文的核心做法</th><th>本服務怎麼用</th></tr>
+      <tr>
+        <td>一輪何時結束</td>
+        <td>Voice Activity Projection（VAP；Ekstedt &amp; Skantze, Interspeech 2022）</td>
+        <td>用兩位說話人各自的聲道，預測接下來誰會說話，用來判斷換人說話的時機</td>
+        <td><span class="tag neg">不能直接用</span> 需要每人一個聲道，手機只有單聲道；改用關鍵詞＋靜音切輪</td>
+      </tr>
+      <tr>
+        <td>一句話說完了沒</td>
+        <td>TurnGPT（Ekstedt &amp; Skantze, Findings of EMNLP 2020）</td>
+        <td>只看文字，用語言模型判斷說到這裡是不是一個可以換人的位置</td>
+        <td>規則版「文字判斷」：前一句沒說完（結尾是「把…、的時候、的話」）就不斷句</td>
+      </tr>
+      <tr>
+        <td>依說話人調整切句門檻</td>
+        <td>Adaptive Endpointing with Contextual Bandits（arXiv 2303.13407）；Dynamic Endpoint Detection（arXiv 2210.14252）</td>
+        <td>不同情境、不同說話人用不同的「靜音多久算說完」，在太早切斷與等太久之間取捨</td>
+        <td><span class="tag neg">負面結果</span> 依語速調整門檻，切句 F1 0.603 → 0.571，預設關閉</td>
+      </tr>
+      <tr>
+        <td>意圖要看幾句前文</td>
+        <td>Rolling window（arXiv 2503.17336）；Zhang &amp; Tang（arXiv 2302.06029）；Xing &amp; Carenini（SIGDIAL 2021）</td>
+        <td>多人對話中用滑動視窗帶前文做多標籤意圖過濾；依內容決定前文長度（2302.06029 的任務是情緒偵測）；依前後句連貫性切出話題段落</td>
+        <td><span class="tag neg">負面結果</span> 固定前文、問句 window、滑動視窗三組實驗都沒有提升；改為「以問句為單位」切分</td>
+      </tr>
+      <tr>
+        <td>意圖信心門檻</td>
+        <td>Larson et al.（EMNLP 2019）；Bohus &amp; Rudnicky（2005）；arXiv 2211.09711</td>
+        <td>門檻沒有固定數值，要用驗證資料調；依「答錯」與「漏答」的代價決定</td>
+        <td>≥ 0.9 自動送出；0.5～0.9 由照護員勾選確認；&lt; 0.5 不送（0.5 待場域資料再調）</td>
+      </tr>
+    </table>
+  </div>
+  <div class="note"><p><strong>小結：</strong>論文的方法多數需要雙聲道或大量標註資料，不能直接搬到手機單聲道的照護現場。本服務採用的是它們的<strong>概念</strong>，改寫成規則（文字判斷說完沒、以問句切分）並用實測數據決定要不要留下；依說話人調整門檻與帶前文判斷意圖，實驗後都沒有提升，已照實記錄為負面結果。</p></div>
+</section>
+
+<section id="s2">
+  <h2>二、LIFF 語音接收、切輪與意圖分析怎麼做</h2>
+  <p>照護員在 LIFF 錄音頁按「確認錄音」後，手機每 0.5 秒上傳一段 16 kHz 音訊到伺服器。伺服器依序處理：</p>
+  <ol class="steps">
+    <li><strong>收音</strong>：手機麥克風，或勾選「使用外接麥克風」（關閉回音消除與自動增益、保留降噪）。伺服器依說話音量自動放大（最多 24 dB）。</li>
+    <li><strong>喚醒詞與結束詞</strong>：關鍵詞偵測（sherpa-onnx KWS）即時聽「小照你好」開始一輪、「小照回答」結束一輪。漏抓時以語音辨識補抓（輪外語音只轉開頭 2 秒比對、不保存）。轉錯的關鍵詞（「小趙雷答」「教你哈」）從逐字稿刪除。</li>
+    <li><strong>切句</strong>：語音偵測（Silero VAD）依停頓切出片段；每段開頭多補 0.3 秒，避免停頓後的第一個字被切掉。再依語音辨識給的每字時間補標點：字間隔 ≥ 0.85 秒補「。」、0.5～0.85 秒補「，」；沒說完的句子併入下一句。</li>
+    <li><strong>切輪</strong>：一輪在三種情況結束——說「小照回答」、安靜 3 秒、或說下一個「小照你好」。同一個片段裡同時有結束詞和喚醒詞時，依文字中的位置切開，不會整段遺失。</li>
+    <li><strong>轉文字</strong>：Paraformer 語音辨識＋CT-Transformer 標點。</li>
+    <li><strong>照護用詞修正</strong>：轉完先套規則對照表（前後文符合才換，例：「附件師」→「復健師」，「尿不出來」不換）；再做讀音比對（連聲調都相同的長詞直接換，其他提醒「💡 可能是」）。保留原文，確認紀錄可以看到。</li>
+    <li><strong>說話人</strong>：住民同意時，以聲紋（ERes2Net）在記憶體內匿名分群成「說話人 01、02、03」，不存聲紋；照護員在確認紀錄把代號對應到照護員、長輩、家屬。短於 2 秒的句子不開新代號，歸給最接近的人。</li>
+    <li><strong>問句切分</strong>：依標點與規則判斷問句（依教育部標點手冊與國語辭典：單獨的「呢、吧」不算；反問、爭吵不算），問句單獨一句，前面的陳述是它的前文。</li>
+    <li><strong>意圖</strong>：N0v3 模型（7 類），輸入「說話人：句子」，輸出意圖與信心。需要回答的三類是規範詢問、服務請求、身體不適陳述。</li>
+    <li><strong>送出與提醒</strong>：三類問題信心 ≥ 0.9 自動送後端；0.5～0.9 跳出勾選視窗由照護員確認；未確認的留在「我的案件」並顯示 ❗。句子說沒事卻有不舒服的線索（「不痛，可是受不了」）時，顯示「⚠ 可能聽錯，請確認」。</li>
+  </ol>
+  <div class="note"><p>每一步的設計都經過開發前評估（GD），設計文件在 <code>docs/designs/</code>；參數與規則都可用設定開關關閉、回到前一版。</p></div>
+</section>
+
+<section id="s3">
+  <h2>三、LIFF 實際測試錄音的召回率</h2>
+  <p>以下都是用手機開 LIFF 實際錄音（10/14～10/18），照文稿唸、再和文稿比對。召回率＝應該抓到的項目中，系統實際抓到的比例。</p>
+
+  <h3>3.1 照護用詞召回率（4 份文稿，138 次）</h3>
+  <div class="table-wrap">
+    <table>
+      <tr><th>文稿</th><th>照護用詞次數</th><th>語音辨識原始</th><th>錄音當時服務顯示</th><th>目前規則（偏樂觀）</th></tr>
+      <tr><td>第一份（10/17，復健師、阿嬤…）</td><td class="num">21</td><td class="num">57%</td><td class="num">71%</td><td class="num">86%</td></tr>
+      <tr><td>第二份（10/17，鼻胃管、壓瘡…）</td><td class="num">30</td><td class="num">47%</td><td class="num">77%</td><td class="num">87%</td></tr>
+      <tr><td>第三份（10/17，新句子）</td><td class="num">32</td><td class="num">62%</td><td class="num"><strong>88%</strong></td><td class="num">100%</td></tr>
+      <tr><td>第四份（10/18，輔具、器材等新用詞）</td><td class="num">55</td><td class="num">65%</td><td class="num">73%</td><td class="num">84%</td></tr>
+      <tr><td><strong>合計</strong></td><td class="num">138</td><td class="num"><strong>59.4%</strong></td><td class="num"><strong>76.8%</strong></td><td class="num">88.4%</td></tr>
+    </table>
+  </div>
+  <ul>
+    <li>照護用詞召回率＝文稿中照護用詞出現的次數裡，逐字稿也正確出現的比例（每一輪分別計算）。</li>
+    <li>「目前規則」是用今天的規則重算，規則就是從這些錄音整理出來的，<strong>偏樂觀</strong>；較公平的是「錄音當時」：第三份文稿用新句子、規則都在錄音前就有，召回率 88%。</li>
+    <li>不誤改：正確的訓練句子 1179 句，修正後 <strong>0 句被改動</strong>；實測中「尿不出來、一臉茫然、新政策出臺、附近」等正常說法都沒有被改。</li>
+  </ul>
+
+  <h3>3.2 意圖召回率（10/14 LIFF 錄音 53 句，N0v3）</h3>
+  <div class="table-wrap">
+    <table>
+      <tr><th>意圖</th><th>召回</th><th>精確</th></tr>
+      <tr><td>規範詢問</td><td class="num">22/26 = 85%</td><td class="num">22/22</td></tr>
+      <tr><td>身體不適陳述</td><td class="num">10/11 = 91%</td><td class="num">10/10</td></tr>
+      <tr><td>資訊告知或交接</td><td class="num">13/14 = 93%</td><td class="num">13/17</td></tr>
+      <tr><td>拒絕或抗拒</td><td class="num">0/2</td><td class="num">—</td></tr>
+      <tr><td><strong>需要回答的三類合計</strong>（規範詢問、身體不適；這批沒有服務請求）</td><td class="num"><strong>32/37 = 86.5%</strong></td><td class="num">32/32</td></tr>
+      <tr><td>三類中會送到後端（判成三類之一即可）</td><td class="num">33/37 = 89.2%</td><td class="num">—</td></tr>
+      <tr><td>整體準確率</td><td class="num" colspan="2">45/53 = 84.9%</td></tr>
+    </table>
+  </div>
+  <ul>
+    <li>標註由提案學生審閱。這 53 句沒有用來訓練 N0v3，但曾用來比較模型與決定標註規則，不完全是盲測。</li>
+    <li>漏掉的 2 句「拒絕或抗拒」是轉述長輩反問的句子（「你們懂什麼，難道我不能自己決定嗎！」），被判為資訊告知。</li>
+  </ul>
+
+  <h3>3.3 切輪、說話人、提醒</h3>
+  <div class="table-wrap">
+    <table>
+      <tr><th>項目</th><th>資料</th><th>結果</th></tr>
+      <tr><td>結束詞「小照回答」：唸完一輪後以結束詞結束</td><td>10/17～18 LIFF 實測 24 輪</td><td class="num"><strong>23/24 = 95.8%</strong>（1 輪靜音結束）</td></tr>
+      <tr><td>「小照請回答」、句中的「回答」不結束一輪</td><td>10/15 錄音 kw2～kw4</td><td class="num">0 次誤觸發</td></tr>
+      <tr><td>文稿問句偵測</td><td>10/17 三人對話</td><td class="num">6/6</td></tr>
+      <tr><td>說話人代號正確（一人說、≥ 2 秒的句子）</td><td>10/17 三人對話，8 輪</td><td class="num">29/29</td></tr>
+      <tr><td>「可能聽錯」衝突提醒召回</td><td>10/17～18 LIFF 實測</td><td class="num"><strong>13/13</strong>；單獨一句的「現在已經不痛了」不提醒</td></tr>
+      <tr><td>停頓後第一個字不被切掉</td><td>10/17 LIFF 錄音重播 15 次</td><td class="num">修正前 6/15 → 修正後 15/15</td></tr>
+    </table>
+  </div>
+  <p>同學模擬對話（非 LIFF，以錄音重播）：切輪邊界 F1 0.095 → 0.909、開輪 6/8 → 8/8，詳見 10/19 報告第三、四節。</p>
+</section>
+
+<section id="s4">
+  <h2>四、外接麥克風與手機收音測試</h2>
+  <ul>
+    <li><strong>選擇麥克風</strong>：Android Chrome 開著回音消除時以通話模式收音，不會使用 Type-C 麥克風，選單也看不到。錄音頁新增「使用外接麥克風」模式：<strong>關閉回音消除與自動增益、保留降噪</strong>。</li>
+    <li><strong>降噪要保留</strong>：關掉降噪時，背景聲讓 VAD 一直判定在說話，一輪變成 17～21 秒的一段，問句被切短（「不去，附件嗎？」信心 0.43）；保留降噪後，14 句全部正確切開。</li>
+    <li><strong>字錯誤率與收音距離</strong>（同一份文稿；電風扇開著）：</li>
+  </ul>
+  <div class="table-wrap">
+    <table>
+      <tr><th>收音方式</th><th>第 1、2 輪字錯誤率</th><th>收得到「小照你好」的距離</th></tr>
+      <tr><td><strong>RODE</strong>（發射器夾衣領，手機 1.5 公尺外）</td><td class="num"><strong>10.3%</strong></td><td>1.5 公尺外仍可</td></tr>
+      <tr><td>RODE 發射器離嘴 200 公分（電風扇不對著吹）</td><td class="num">15.5%（第 3 輪有一次漏收結束詞）</td><td>約 200 公分（極限）</td></tr>
+      <tr><td>RODE 發射器離嘴 100 公分（電風扇對著發射器吹）</td><td class="num">第 1 輪 18.4%</td><td>約 100 公分（極限）</td></tr>
+      <tr><td>手機 25 公分（電風扇對著吹）</td><td class="num">13.4%</td><td rowspan="2">約 50 公分</td></tr>
+      <tr><td>手機 50 公分（電風扇對著吹）</td><td class="num">第 2 輪 16.7%（兩次平均；RODE 第 2 輪 8.3%）</td></tr>
+      <tr><td>手機 100 公分（電風扇不對著手機吹）</td><td class="num">25.8%（第 2 輪 41.7%，結束詞也沒收到）</td><td>約 100 公分</td></tr>
+    </table>
+  </div>
+  <p>手機放到 40 公分時第 3 輪字錯誤率仍有 20.8%。手機的字錯誤率主要取決於距離：放到 25 公分才接近 RODE，但仍較差。RODE 的優勢主要來自發射器貼近嘴巴，發射器放遠到極限距離時效果與手機相近，<strong>實際使用時發射器應夾在照護員衣領上</strong>。<strong>有電風扇這類噪音時，手機要放很近才能用，外接麥克風明顯較好</strong>（上午另一次手機錄音 16.5%，距離與有無電風扇未記錄，不列入比較）。</p>
+  <ul>
+    <li><strong>其他</strong>：雙聲道合成一路；伺服器依說話音量自動放大（只放大、最多 24 dB）。</li>
+  </ul>
+  <p>同期修正的錄音問題：</p>
+  <ul>
+    <li>連點「確認錄音」會開兩支麥克風，文字每段重複，已防連點。</li>
+    <li>電風扇聲讓 KWS 誤報喚醒詞：附近沒有語音就不開輪。</li>
+    <li>說了「小照請回答」，但風扇聲讓這一輪 35 秒才結束：改為最多等 1.5 秒。</li>
+  </ul>
+</section>
+
+<section id="s5">
+  <h2>五、意圖模型 N0v3</h2>
+  <div class="table-wrap">
+    <table>
+      <tr><th>項目</th><th>N0v3 用的模型與設定</th></tr>
+      <tr><td>預訓練模型</td><td><code>hfl/chinese-roberta-wwm-ext</code>（哈工大訊飛聯合實驗室的中文 RoBERTa，全詞遮罩預訓練；BERT 架構 12 層、隱藏維度 768）</td></tr>
+      <tr><td>輸出</td><td>同一個編碼器接<strong>兩個輸出頭</strong>：意圖 7 類、意圖歸屬 5 種角色（照護員、家屬、長輩、督導、其他工作人員）；取 [CLS] 的向量經 softmax 得到信心</td></tr>
+      <tr><td>輸入</td><td>「說話人：句子」（例：「照護員：阿嬤今天血壓比較高」）；說話人尚未對應時為「未辨識」；最長 128 字元單位，不帶前文</td></tr>
+      <tr><td>訓練資料</td><td>care7 單句 543 句＋care7ctx 照護對話 636 句（170 段，含 10/15 新增的反問、抱怨對照與實測句子）</td></tr>
+      <tr><td>微調設定</td><td>學習率 2e-5、batch 16、最多 10 輪，取驗證分數最高的一輪（第 9 輪）；種子 42</td></tr>
+      <tr><td>名稱由來</td><td>N0＝10/11 前文實驗中「不帶前文（0 句）」的組別；v3＝第三版訓練資料</td></tr>
+    </table>
+  </div>
+  <p>「你懂什麼！」「每天都量，煩不煩啊？」這類反問被問句規則當成問句時，N0 有時判成需要回答的意圖並送後端（測試反問 3/10 被誤送）。不採用 arXiv 2302.06029 的情緒模型（多個 RoBERTa、計算量大、無中文照護資料，且「有情緒」不等於「不是問題」），改為補充資料重訓。</p>
+  <ul>
+    <li><strong>第一次（N0v2，反問 28 句＋實測 14 句）未通過</strong>：交叉驗證 79.6% → 77.0%。拆開兩批訓練發現兩個原因：反問句讓模型太容易判成「拒絕或抗拒」（每個種子誤判 7.3 → 12.7 次）；實測那批把「轉述別人的拒絕」標成資訊告知，和原有資料矛盾。</li>
+    <li><strong>修正</strong>：轉述的拒絕統一標「拒絕或抗拒」、歸屬真正拒絕的人（提案學生決定）；新增「抱怨口氣，但其實是身體不適或資訊告知」對照句 24 句。共 636 句／170 段。</li>
+  </ul>
+  <div class="table-wrap">
+    <table>
+      <tr><th>項目</th><th>N0</th><th>N0v2</th><th>N0v3</th><th>原標準</th></tr>
+      <tr><td>測試反問被送後端</td><td class="num">3/10</td><td class="num">1/10</td><td class="num"><strong>1/10</strong></td><td>≤ 1 ✅</td></tr>
+      <tr><td>抱怨口氣的對照句判對</td><td class="num">6/10</td><td class="num">—</td><td class="num"><strong>8/10</strong></td><td>—</td></tr>
+      <tr><td>15 句問句送後端</td><td class="num">12/15</td><td class="num">14/15</td><td class="num">12/15</td><td>不低於現行 ✅</td></tr>
+      <tr><td>10/14 錄音 53 句</td><td class="num">81.1%</td><td class="num">86.8%</td><td class="num"><strong>84.9%</strong></td><td>≥ 79.1% ✅</td></tr>
+      <tr><td>交叉驗證：原有 570 句（3 種子範圍）</td><td class="num">79.6%（78.8～81.2）</td><td class="num">77.0%</td><td class="num">78.3%（77.5～79.5）</td><td>≥ 78.6% ❌</td></tr>
+      <tr><td>交叉驗證：care7 單句</td><td class="num">91.5%</td><td class="num">91.0%</td><td class="num">90.4%</td><td>≥ 90.5% ❌</td></tr>
+      <tr><td>被誤判成拒絕（每個種子）</td><td class="num">7.3</td><td class="num">14.0</td><td class="num">11.0</td><td>—</td></tr>
+    </table>
+  </div>
+  <ul>
+    <li><strong>依原標準 N0v3 未通過</strong>（交叉驗證差 0.3 與 0.1 個百分點，在種子波動範圍內）。<strong>提案學生決定先換上 N0v3</strong>（門檻 0.9 不變），理由：實際使用更重要的兩項（反問誤送、實際錄音）都進步，並同時加上第六節的照護員確認把關。請老師決定是否續用；回滾只需改 <code>N0_MODEL_DIR</code>。</li>
+    <li><strong>建議的新標準</strong>（從下一次開始適用，不回頭套用到 N0v3）：
+      <ol>
+        <li>交叉驗證不低於現行三個種子的最低值（取代「現行減 1 個百分點」，N0 自己三個種子就差 2.4 個百分點）；</li>
+        <li>實際錄音優先：實際錄音不能退步，AI 生成的資料只確認沒有明顯變差；</li>
+        <li>三類需要回答的意圖（規範詢問、服務請求、身體不適）單獨看召回率。</li>
+      </ol>
+    </li>
+    <li>門檻：文獻沒有固定數值，都是用驗證資料調（Larson et al. 2019；Bohus &amp; Rudnicky 2005 依誤解與錯誤拒答的代價調門檻）。目前的 0.5 下限是暫定值，待實際場域錄音再調。</li>
+  </ul>
+</section>
+
+<section id="s6">
+  <h2>六、低信心問題由照護員確認</h2>
+  <div class="callout"><p><strong>過渡功能：</strong>照護員確認是因為意圖模型目前的召回率還不夠高。等實際場域資料多了、重新訓練後召回率提高，就可以不用這個功能（設定 <code>CONFIRM_LOW_CONFIDENCE=0</code> 即關閉，恢復自動送出）。</p></div>
+  <div class="table-wrap">
+    <table>
+      <tr><th>意圖信心（規範詢問、服務請求、身體不適）</th><th>錄音與 LIFF 打字提問</th></tr>
+      <tr><td>≥ 0.9</td><td>自動送後端</td></tr>
+      <tr><td>0.5～0.9</td><td>跳出勾選視窗（預設不勾），照護員勾選後送出；關閉或沒勾的留在「我的案件」，分頁顯示 ❗、醒目標示，之後可送出或標為不用</td></tr>
+      <tr><td>&lt; 0.5 或其他意圖</td><td>不送出、不詢問（打字提問會提示，並記在我的案件）</td></tr>
+    </table>
+  </div>
+  <ul>
+    <li><strong>LINE 聊天室</strong>（提案學生定義）：只回答規範詢問並附出處；醫療、用藥、補助金額一律轉督導（即使意圖是規範詢問）；其他不回答，在我的案件顯示「小照在 LINE 只回答規範查詢」。LINE 上不做確認。</li>
+    <li><strong>結束詞改為「小照回答」</strong>：「小照請回答」不再結束一輪，送後端前也會去掉。自錄 5 段驗證：結束、不結束、句中的「回答」、沒說喚醒詞的閒聊，都符合預期。</li>
+    <li><strong>LIFF 移除麥克風下拉選單</strong>（Android Chrome 列不出外接麥克風），只留「使用外接麥克風」勾選框。</li>
+    <li>LIFF 實測（10/15）：打字、錄音、LINE 各情境都照上述規則運作。出處要等後端組上線後，用真實回應驗證。</li>
+    <li>回滾：<code>CONFIRM_LOW_CONFIDENCE=0</code>、<code>LINE_REGULATION_ONLY=0</code>。</li>
+  </ul>
+</section>
+
+<section id="s7">
+  <h2>七、語音辨識照護用詞修正與「可能聽錯」提醒</h2>
+  <div class="callout"><p><strong>過渡功能：</strong>對照表與「可能聽錯」提醒是為了補語音辨識的錯字。等語音辨識的準確率提高（例如換成支援自訂詞的模型，或用場域錄音微調）後，就可以不用這個功能（設定 <code>ASR_CORRECTION=0</code>、<code>REVIEW_FLAGS=0</code> 即關閉）。</p></div>
+  <p>實測中照護用詞常被轉錯（三人實測「復健」6 次全轉成「附件」；「很痛」轉成「不痛」）。目前的語音辨識模型（Paraformer）不支援自訂詞，改在轉完文字後處理（GD 方案 A，設計文件 2026-10-17-ltc-awe-asr-term-correction）。</p>
+  <ul>
+    <li><strong>規則對照表（轉完再換字）</strong>：錯字前後文符合條件才換，例：「附件」後面接師、室、課才換成「復健」；「尿不出來」不換成尿布。每次實測找到新錯法，由 AI 草擬、提案學生審閱，目前 61 條（收 53 條，其餘記錄不收）。保留語音辨識原文，確認紀錄顯示「原文：…」。</li>
+    <li><strong>前後文衝突提醒</strong>（只提醒、不改字）：同一句說沒事又有不舒服的詞（「腰還是不痛，坐久了就受不了」），或同一輪前後矛盾，顯示「⚠ 可能聽錯，請確認」；有「現在、已經、剛剛」等時間詞算好轉、不提醒。原設計的「說沒事但意圖判為身體不適」誤標 6/10，提案學生決定拿掉。</li>
+    <li><strong>開頭字被切掉</strong>：說完「小照你好」停頓後的「麻煩」只剩「煩」，原因是偵測語音開始較慢；每段開頭多補 0.3 秒，重播 15 次第一字完整 <strong>6/15 → 15/15</strong>。</li>
+  </ul>
+  <p>實測數據見第三節：照護用詞召回率（3.1）、衝突提醒召回率（3.3）。另外，文稿錄音 134 句的照護用詞正確率 48.7% → 79.5%，整體字錯誤率 21.9% → 21.8%（不上升）；正確的訓練句子 1179 句，0 句被改動。</p>
+</section>
+
+<section id="s8">
+  <h2>八、讀音相近就比對</h2>
+  <p>同一個詞每次錄音都有新錯法（鼻胃管：鼻味管、鼻尾管、鼻位管、移位管），規則逐條補不完。改用讀音比對補充（設計文件 2026-10-17-ltc-awe-phonetic-term-match；新增依賴 pypinyin，MIT 授權）。</p>
+  <ul>
+    <li><strong>用詞清單</strong>擴充為 144 個長照用詞：衛福部照顧組合、長照輔具給付項目（臺中市衛生局對照表）、機構常見管路與器材、長照常見醫學用詞、人員與服務，皆註明來源並經提案學生審閱。</li>
+    <li><strong>做法</strong>（提案學生決定）：讀音只允許差聲調；3 個字以上且<strong>連聲調都相同</strong>的才直接換，其他（2 個字、只差聲調）只提醒「💡 可能是：〇〇」。只看不含聲調的讀音時，「附件室」曾被換成「復健師」（室 shì、師 shī），改為連聲調比對後不再換錯。</li>
+    <li><strong>涵蓋範圍</strong>：已蒐集的 53 組錯法中，讀音相同或只差聲調的 20 組（38%）；其餘仍靠規則對照表。</li>
+    <li><strong>第四份文稿實測</strong>（新用詞，對照表沒有規則）：各管師→個管師直接換 3 次；各管事、據服員、趙福遠、嗆殼、阿工提醒 6 次；正確句子 1179 句換字 0、提醒 3 句（0.25%）；「尿不出來」不提醒。</li>
+  </ul>
+</section>
+
+<section id="s9">
+  <h2>九、接到後端的 API 欄位</h2>
+  <p>依後端組（吳明叡）《小照前後端串接設計》（10/03）的 API 合約實作，程式在 <code>src/xiaozhao/backend.py</code> 的 <code>HttpBackend</code>（<code>BACKEND_MODE=http</code>）。以下是本服務<strong>實際送出與讀取</strong>的欄位。</p>
+  <ul>
+    <li>連線：<code>BACKEND_URL</code>；每個請求帶 <code>Authorization: Bearer &lt;BACKEND_TOKEN&gt;</code>（權杖另行私下交付，不放在程式包裡）。</li>
+    <li>流程：① 送問題 → 後端回 202 與 <code>request_id</code> → ③ 每 0.1 秒輪詢取回回答，最長 30 秒；② 一輪結束送整輪紀錄（不輪詢）。</li>
+    <li>網路錯誤、401、5xx、未知狀態或逾時，一律轉督導，問題不會遺失。</li>
+  </ul>
+
+  <h3>9.1 ① <code>POST /v1/query</code>：送出一個問題</h3>
+  <div class="table-wrap">
+    <table>
+      <tr><th>欄位</th><th>型別</th><th>內容</th></tr>
+      <tr><td><code>request_id</code></td><td>字串</td><td>本服務產生的請求編號（UUID）</td></tr>
+      <tr><td><code>text</code></td><td>字串</td><td>問題文字（已換照護用詞、去掉「小照請回答」）；錄音的問句會在前面附上同一個 window 的相關陳述（資訊告知、身體不適）</td></tr>
+      <tr><td><code>intent</code></td><td>字串</td><td>意圖中文名稱（例：規範詢問）</td></tr>
+      <tr><td><code>intent_conf</code></td><td>數字</td><td>意圖信心 0～1</td></tr>
+      <tr><td><code>client_intent</code></td><td>物件</td><td><code>{"code": "regulation_inquiry", "confidence": 0.93}</code>，代碼見 4.4</td></tr>
+      <tr><td><code>label_set_version</code></td><td>字串</td><td><code>awe-intent-7-v1</code></td></tr>
+      <tr><td><code>caregiver_name</code></td><td>字串</td><td>照護員顯示名稱</td></tr>
+      <tr><td><code>role</code></td><td>字串</td><td>固定 <code>caregiver</code></td></tr>
+      <tr><td><code>user_id</code></td><td>—</td><td>目前送 <code>null</code>（綁定方式待和後端組確認）</td></tr>
+      <tr><td><code>keywords</code></td><td>陣列</td><td>目前為空</td></tr>
+      <tr><td><code>provisional</code></td><td>布林</td><td><code>true</code>＝錄音中提早送出（預取，信心 ≥ 0.9）；<code>false</code>＝一輪結束或照護員確認後送出</td></tr>
+      <tr><td><code>lexicon_version</code>、<code>client_timing_ms</code></td><td>—</td><td>目前送 <code>null</code></td></tr>
+      <tr><th colspan="3">依來源多帶的欄位</th></tr>
+      <tr><td><code>turn_id</code>、<code>question_utterance_id</code>、<code>context_utterance_ids</code>、<code>speaker_code</code>、<code>speaker_role</code></td><td>數字／陣列／字串</td><td>錄音的問句：第幾輪、問句是第幾句、附帶的前文句子、說話人代號（01、02…）與身分（照護員、長輩、家屬、未辨識）</td></tr>
+      <tr><td><code>turn_id</code>、<code>utterance_ids</code>、<code>speaker_codes</code></td><td>數字／陣列</td><td>錄音中不是問句、但意圖需要回答的陳述（依意圖合併）</td></tr>
+      <tr><td><code>text_question_id</code></td><td>數字</td><td>LIFF 手動打字提問</td></tr>
+      <tr><td><code>line_case_id</code></td><td>數字</td><td>LINE 聊天室提問（只有規範詢問會送）</td></tr>
+    </table>
+  </div>
+  <p>回應：HTTP 202，<code>{"request_id": "…"}</code>（沒有回傳時沿用本服務的編號）。</p>
+
+  <h3>9.2 ③ <code>GET /v1/requests/{request_id}</code>：取回回答</h3>
+  <div class="table-wrap">
+    <table>
+      <tr><th><code>status</code></th><th>本服務讀取的欄位</th><th>本服務的處理</th></tr>
+      <tr><td><code>pending</code></td><td>—</td><td>0.1 秒後再問；超過 30 秒轉督導</td></tr>
+      <tr><td><code>answered</code></td><td><code>answer_full</code>（沒有時用 <code>answer_spoken</code>）、<code>citations</code></td><td>顯示回答，後面附「出處：…」；<code>citations</code> 每筆可為字串，或含 <code>title</code>、<code>article</code> 的物件</td></tr>
+      <tr><td><code>human_answered</code></td><td><code>human_answer</code></td><td>顯示主管的回答</td></tr>
+      <tr><td><code>refused</code></td><td><code>help_request_id</code></td><td>轉督導，原因寫「後端拒答轉人工（求助單 …）」</td></tr>
+      <tr><td>其他（含 <code>error</code>）</td><td>—</td><td>轉督導</td></tr>
+    </table>
+  </div>
+
+  <h3>9.3 ② <code>POST /v1/scene</code>：一輪結束的整輪紀錄</h3>
+  <div class="table-wrap">
+    <table>
+      <tr><th>欄位</th><th>內容</th></tr>
+      <tr><td><code>request_id</code></td><td>本服務產生的請求編號</td></tr>
+      <tr><td><code>turn_id</code>、<code>session_id</code>、<code>caregiver_name</code></td><td>第幾輪、哪一次錄音、照護員</td></tr>
+      <tr><td><code>end_reason</code></td><td><code>answer_keyword</code>（小照回答）、<code>silence</code>（靜音 3 秒）、<code>next_wake_word</code>（下一個小照你好）、<code>session_stop</code>（停止錄音）</td></tr>
+      <tr><td><code>utterances</code></td><td>每句：<code>idx</code>、<code>text</code>、<code>speaker_code</code>、<code>speaker_role</code>、<code>intent</code>（中文）、<code>intent_conf</code>、<code>is_question</code>、<code>window_id</code>、<code>start_ms</code>、<code>end_ms</code>；設 <code>BACKEND_SCENE_TEXT=0</code> 時不帶 <code>text</code></td></tr>
+      <tr><td><code>intents</code></td><td>這一輪的意圖清單：<code>intent</code>、<code>utterance_ids</code>、<code>confidence</code>、<code>speaker_codes</code>、<code>speaker_roles</code></td></tr>
+      <tr><td><code>intent_counts</code></td><td>各意圖代碼的句數，例：<code>{"regulation_inquiry": 2}</code></td></tr>
+      <tr><td><code>segment_count</code>、<code>caregiver_segment_count</code>、<code>duration_sec</code></td><td>句數、照護員的句數、這一輪的長度（秒）</td></tr>
+      <tr><td><code>final_intent</code>、<code>provisional</code></td><td>第一個需要回答的意圖；固定 <code>false</code></td></tr>
+      <tr><td><code>label_set_version</code></td><td><code>awe-intent-7-v1</code></td></tr>
+      <tr><td><code>caregiver_user_ids</code>、<code>scene</code>、<code>keywords</code>、<code>lexicon_version</code></td><td>目前送空陣列或 <code>null</code></td></tr>
+    </table>
+  </div>
+  <p>scene 的回應不當作回答，本服務不輪詢。</p>
+
+  <h3>9.4 意圖代碼（<code>awe-intent-7-v1</code>，草案）</h3>
+  <div class="table-wrap">
+    <table>
+      <tr><th>意圖</th><th>代碼</th><th>會送 <code>/v1/query</code></th></tr>
+      <tr><td>規範詢問</td><td><code>regulation_inquiry</code></td><td>是</td></tr>
+      <tr><td>服務請求</td><td><code>service_request</code></td><td>是</td></tr>
+      <tr><td>身體不適陳述</td><td><code>discomfort_report</code></td><td>是</td></tr>
+      <tr><td>資訊告知或交接</td><td><code>information_handover</code></td><td>否（只隨問句當前文）</td></tr>
+      <tr><td>拒絕或抗拒</td><td><code>refusal</code></td><td>否</td></tr>
+      <tr><td>確認或同意</td><td><code>confirmation</code></td><td>否</td></tr>
+      <tr><td>情緒安撫或閒聊</td><td><code>emotional_support</code></td><td>否</td></tr>
+    </table>
+  </div>
+  <div class="note">
+    <p><strong>待和後端組確認</strong>：</p>
+    <ul>
+      <li>意圖代碼表由後端組提供或確認；</li>
+      <li><code>user_id</code>：綁定是否統一用後端組的綁定碼；</li>
+      <li><code>citations</code> 的格式（目前同時接受字串與 <code>title</code>／<code>article</code> 物件）；</li>
+      <li>scene 是否帶逐字稿原文（合約原設計不含原文）；</li>
+      <li>LINE 由哪一邊接收（一個官方帳號只能有一個 webhook）。</li>
+    </ul>
+  </div>
+</section>
+
+<section id="s10">
+  <h2>十、限制與下一步</h2>
+  <ul>
+    <li><strong>朗讀者少</strong>：LIFF 實測主要是提案學生自己照文稿唸，照護用詞規則也從這些錄音整理，召回率偏樂觀；需要換人、換環境錄音。</li>
+    <li><strong>文稿 ≠ 實際對話</strong>：實際照護現場有搶話、方言、噪音，召回率可能更低；場域收資料前需老師核可同意書與機構書面同意。</li>
+    <li><strong>還沒處理</strong>：好幾句被合成一句、偶爾少字（「每兩個小時」少了「兩」）；只靠語調的問句文字看不出來。</li>
+    <li><strong>後端</strong>：已依後端組 API 合約串接，回覆時間與出處要等後端組上線後實測。</li>
+  </ul>
+</section>
+
+<footer>資料來源：LIFF 實測錄音（資料庫 turns／utterances，10/14～10/18）；文稿與標準答案在 endpoint_recordings/；設計文件在 docs/designs/（2026-10-13-ltc-awe-oct19-report、2026-10-17-ltc-awe-asr-term-correction、2026-10-17-ltc-awe-phonetic-term-match、2026-10-17-ltc-awe-three-speaker-script 等）。</footer>
+
+</main>
+</body>
+</html>

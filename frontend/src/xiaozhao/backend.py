@@ -12,10 +12,11 @@ import threading
 import time
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Protocol
+
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +33,8 @@ class BackendResult:
     refusal_reason: str | None = None
     # 送出到收到回覆的毫秒數（TrackedBackend 量測；2026-10-14 async-backend 第 7 節）
     elapsed_ms: float | None = None
+    # 引用出處（後端組合約 ③ 的 citations）
+    citations: list = field(default_factory=list)
 
 
 class Backend(Protocol):
@@ -198,7 +201,9 @@ class HttpBackend:
             data = response.json()
             status = data.get("status")
             if status == "answered":
-                return BackendResult(request_id, "answered", answer=data.get("answer_full") or data.get("answer_spoken"))
+                citations = data.get("citations") or []
+                return BackendResult(request_id, "answered", citations=citations,
+                                     answer=with_citations(data.get("answer_full") or data.get("answer_spoken"), citations))
             if status == "human_answered":
                 return BackendResult(request_id, "answered", answer=data.get("human_answer"))
             if status == "refused":
@@ -226,6 +231,21 @@ class HttpBackend:
     def _failed(request_id: str, reason: str) -> BackendResult:
         logger.warning("後端請求 %s 失敗：%s", request_id, reason)
         return BackendResult(request_id, "awaiting_human", reason=reason)
+
+
+def with_citations(answer: str | None, citations: list) -> str | None:
+    """回答後附上出處（LINE 聊天室使用規則：只回答規範詢問並附上相關出處）。"""
+    if not answer or not citations:
+        return answer
+    names = []
+    for c in citations:
+        if isinstance(c, dict):
+            name = " ".join(str(c[k]) for k in ("title", "article") if c.get(k))
+        else:
+            name = str(c)
+        if name and name not in names:
+            names.append(name)
+    return f"{answer}\n出處：{'；'.join(names)}" if names else answer
 
 
 class BackgroundRunner:

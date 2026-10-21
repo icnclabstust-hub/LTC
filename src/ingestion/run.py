@@ -1,7 +1,15 @@
 import argparse
 import asyncio
 
-from ingestion import law_crawler, ltc_points_crawler, sop_crawler
+from ingestion import (
+    golden_queries,
+    graph_sync,
+    law_crawler,
+    ltc1966_crawler,
+    ltc_benefits,
+    ltc_points_crawler,
+    sop_crawler,
+)
 from ingestion.common import get_logger
 
 logger = get_logger("run")
@@ -10,6 +18,11 @@ _CRAWLERS = {
     "law": law_crawler.run,
     "ltc_points": ltc_points_crawler.run,
     "sop": sop_crawler.run,
+    # 2026-10-19 ltc-kb-graph
+    "ltc_benefits": ltc_benefits.run,
+    "ltc1966": ltc1966_crawler.run,
+    "golden_queries": golden_queries.run,
+    "graph_sync": graph_sync.run,
 }
 
 
